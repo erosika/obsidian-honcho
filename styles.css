@@ -1,0 +1,284 @@
+/* =========================================================================
+   Honcho Plugin Styles
+   Uses Obsidian CSS variables exclusively -- no inline colors.
+   ========================================================================= */
+
+/* -- Sidebar ------------------------------------------------------------ */
+
+.honcho-sidebar {
+	padding: var(--size-4-3);
+	overflow-y: auto;
+}
+
+.honcho-sidebar-header {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	flex-wrap: wrap;
+	margin-bottom: var(--size-4-3);
+}
+
+.honcho-sidebar-header h3 {
+	margin: 0;
+	flex: 1;
+}
+
+.honcho-status {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-1);
+	font-size: var(--font-smallest);
+}
+
+.honcho-dot-ok {
+	color: var(--text-success);
+}
+
+.honcho-dot-err {
+	color: var(--text-error);
+}
+
+.honcho-status-text {
+	color: var(--text-muted);
+}
+
+.honcho-refresh-btn {
+	font-size: var(--font-smallest);
+}
+
+.honcho-sidebar-search {
+	margin-bottom: var(--size-4-3);
+}
+
+.honcho-search-input {
+	width: 100%;
+	padding: var(--size-4-1) var(--size-4-2);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background: var(--background-primary);
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+}
+
+.honcho-search-input:focus {
+	border-color: var(--interactive-accent);
+	outline: none;
+}
+
+.honcho-sidebar-search-results {
+	margin-bottom: var(--size-4-3);
+}
+
+.honcho-section {
+	margin-bottom: var(--size-4-4);
+}
+
+.honcho-section h4 {
+	margin: 0 0 var(--size-4-2) 0;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+.honcho-card-list {
+	padding-left: var(--size-4-4);
+	margin: 0;
+}
+
+.honcho-card-list li {
+	margin-bottom: var(--size-4-1);
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+}
+
+.honcho-representation {
+	padding: var(--size-4-2);
+	background: var(--background-secondary);
+	border-radius: var(--radius-s);
+	font-size: var(--font-ui-small);
+	line-height: 1.5;
+}
+
+.honcho-conclusions-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-1);
+	max-height: 300px;
+	overflow-y: auto;
+}
+
+.honcho-conclusion-item {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: var(--size-4-1) var(--size-4-2);
+	background: var(--background-secondary);
+	border-radius: var(--radius-s);
+	font-size: var(--font-ui-smaller);
+}
+
+.honcho-conclusion-date {
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+}
+
+.honcho-conclusion-text {
+	color: var(--text-normal);
+}
+
+.honcho-sidebar-empty,
+.honcho-loading {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	font-style: italic;
+}
+
+.honcho-error {
+	color: var(--text-error);
+	font-size: var(--font-ui-small);
+}
+
+/* -- Search Modal ------------------------------------------------------- */
+
+.honcho-search-modal {
+	max-width: 600px;
+}
+
+.honcho-search-results {
+	margin-top: var(--size-4-3);
+	max-height: 400px;
+	overflow-y: auto;
+}
+
+.honcho-search-count {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	margin-bottom: var(--size-4-2);
+}
+
+.honcho-search-loading {
+	color: var(--text-muted);
+	font-style: italic;
+}
+
+.honcho-search-empty {
+	color: var(--text-muted);
+	font-style: italic;
+}
+
+.honcho-search-error {
+	color: var(--text-error);
+}
+
+.honcho-result-card {
+	padding: var(--size-4-2);
+	margin-bottom: var(--size-4-2);
+	background: var(--background-secondary);
+	border-radius: var(--radius-s);
+	border-left: 3px solid var(--interactive-accent);
+}
+
+.honcho-result-date {
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	margin-bottom: var(--size-4-1);
+}
+
+.honcho-result-content {
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+	line-height: 1.4;
+}
+
+/* -- Chat Modal --------------------------------------------------------- */
+
+.honcho-chat-modal {
+	width: 600px;
+	max-width: 90vw;
+}
+
+.honcho-chat-header {
+	margin-bottom: var(--size-4-2);
+}
+
+.honcho-chat-header h2 {
+	margin: 0 0 var(--size-4-2) 0;
+}
+
+.honcho-chat-header .setting-item {
+	border: none;
+	padding: 0;
+}
+
+.honcho-chat-messages {
+	min-height: 200px;
+	max-height: 400px;
+	overflow-y: auto;
+	padding: var(--size-4-2);
+	margin-bottom: var(--size-4-2);
+	background: var(--background-secondary);
+	border-radius: var(--radius-s);
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+}
+
+.honcho-chat-bubble {
+	padding: var(--size-4-2) var(--size-4-3);
+	border-radius: var(--radius-m);
+	max-width: 85%;
+	font-size: var(--font-ui-small);
+	line-height: 1.5;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.honcho-chat-user {
+	align-self: flex-end;
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.honcho-chat-assistant {
+	align-self: flex-start;
+	background: var(--background-primary);
+	color: var(--text-normal);
+	border: 1px solid var(--background-modifier-border);
+}
+
+.honcho-chat-loading {
+	color: var(--text-muted);
+	font-style: italic;
+	font-size: var(--font-ui-small);
+	padding: var(--size-4-1);
+}
+
+.honcho-chat-input-area {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+}
+
+.honcho-chat-input {
+	width: 100%;
+	padding: var(--size-4-2);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background: var(--background-primary);
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+	font-family: var(--font-interface);
+	resize: vertical;
+}
+
+.honcho-chat-input:focus {
+	border-color: var(--interactive-accent);
+	outline: none;
+}
+
+.honcho-chat-buttons {
+	display: flex;
+	gap: var(--size-4-2);
+	justify-content: flex-end;
+}

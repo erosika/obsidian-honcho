@@ -1,0 +1,10 @@
+{
+	"id": "honcho",
+	"name": "Honcho",
+	"version": "0.1.0",
+	"minAppVersion": "0.15.0",
+	"description": "Bridge your vault with Honcho's identity and memory platform. Ingest notes as identity material, query knowledge, and pull representations back.",
+	"author": "erosika",
+	"authorUrl": "https://github.com/erosika",
+	"isDesktopOnly": false
+}

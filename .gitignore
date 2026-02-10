@@ -1,0 +1,4 @@
+node_modules/
+main.js
+*.js.map
+bun.lockb
