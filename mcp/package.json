@@ -1,0 +1,14 @@
+{
+  "name": "honcho-vault-mcp",
+  "version": "0.1.0",
+  "description": "MCP server that bridges an Obsidian vault with Honcho's identity platform",
+  "private": true,
+  "type": "module",
+  "main": "server.ts",
+  "scripts": {
+    "start": "bun run server.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

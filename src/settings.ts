@@ -12,6 +12,7 @@ export interface HonchoPluginSettings {
 	autoSyncTags: string[];
 	autoSyncFolders: string[];
 	trackFrontmatter: boolean;
+	linkDepth: number;
 }
 
 export const DEFAULT_SETTINGS: HonchoPluginSettings = {
@@ -25,6 +26,7 @@ export const DEFAULT_SETTINGS: HonchoPluginSettings = {
 	autoSyncTags: [],
 	autoSyncFolders: [],
 	trackFrontmatter: true,
+	linkDepth: 1,
 };
 
 export class HonchoSettingTab extends PluginSettingTab {
@@ -141,6 +143,23 @@ export class HonchoSettingTab extends PluginSettingTab {
 					})
 			);
 
+		// -- Ingestion --
+		containerEl.createEl("h3", { text: "Ingestion" });
+
+		new Setting(containerEl)
+			.setName("Link traversal depth")
+			.setDesc("How many levels of outgoing links to follow when using 'Ingest + linked notes'")
+			.addSlider((slider) =>
+				slider
+					.setLimits(1, 3, 1)
+					.setValue(this.plugin.settings.linkDepth)
+					.setDynamicTooltip()
+					.onChange(async (value) => {
+						this.plugin.settings.linkDepth = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
 		// -- Auto-sync --
 		containerEl.createEl("h3", { text: "Auto-sync" });
 
@@ -191,7 +210,7 @@ export class HonchoSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Track ingestion in frontmatter")
-			.setDesc("Add honcho_synced timestamp and honcho_conclusion_ids to ingested notes")
+			.setDesc("Add honcho_synced, honcho_session_id, and honcho_message_count to ingested notes")
 			.addToggle((toggle) =>
 				toggle.setValue(this.plugin.settings.trackFrontmatter).onChange(async (value) => {
 					this.plugin.settings.trackFrontmatter = value;

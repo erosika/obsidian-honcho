@@ -3,10 +3,13 @@ import { HonchoClient } from "./honcho-client";
 import { DEFAULT_SETTINGS, HonchoSettingTab, type HonchoPluginSettings } from "./settings";
 import { HONCHO_VIEW_TYPE, HonchoSidebarView } from "./views/sidebar-view";
 import { HonchoChatModal } from "./views/chat-modal";
+import { SessionManagerModal } from "./views/session-manager";
 import { HonchoSearchModal } from "./commands/search";
-import { createIngestContext, ingestNote, ingestFolder, ingestByTag } from "./commands/ingest";
-import { createSyncContext, generateIdentityNote, pullConclusions } from "./commands/sync";
+import { createIngestContext, ingestNote, ingestFolder, ingestByTag, ingestLinked } from "./commands/ingest";
+import { createSyncContext, generateIdentityNote, pullConclusions, pushPeerCardFromNote } from "./commands/sync";
+import type { NoteContext } from "./views/chat-modal";
 import { matchesSyncFilters } from "./utils/frontmatter";
+import { registerHonchoCodeBlock } from "./views/post-processor";
 
 export default class HonchoPlugin extends Plugin {
 	settings: HonchoPluginSettings = DEFAULT_SETTINGS;
@@ -44,6 +47,18 @@ export default class HonchoPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: "ingest-linked",
+			name: "Ingest current note + linked notes",
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file) return false;
+				if (checking) return true;
+				this.runIngestLinked(file);
+				return true;
+			},
+		});
+
+		this.addCommand({
 			id: "ingest-folder",
 			name: "Ingest folder",
 			callback: () => this.runIngestFolderPicker(),
@@ -68,6 +83,12 @@ export default class HonchoPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: "manage-sessions",
+			name: "Manage sessions",
+			callback: () => this.openSessionManager(),
+		});
+
+		this.addCommand({
 			id: "generate-identity-note",
 			name: "Generate identity note",
 			callback: () => this.runGenerateIdentity(),
@@ -79,8 +100,41 @@ export default class HonchoPlugin extends Plugin {
 			callback: () => this.runPullConclusions(),
 		});
 
+		this.addCommand({
+			id: "schedule-dream",
+			name: "Schedule Honcho dream",
+			callback: () => this.runScheduleDream(),
+		});
+
+		this.addCommand({
+			id: "chat-about-note",
+			name: "Chat with Honcho about this note",
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file) return false;
+				if (checking) return true;
+				this.openContextualChat(file);
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: "push-peer-card",
+			name: "Push note as peer card",
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file) return false;
+				if (checking) return true;
+				this.runPushPeerCard(file);
+				return true;
+			},
+		});
+
 		// -- Settings tab --
 		this.addSettingTab(new HonchoSettingTab(this.app, this));
+
+		// -- Code block processor --
+		registerHonchoCodeBlock(this);
 
 		// -- Ribbon icon --
 		this.addRibbonIcon("brain", "Open Honcho", () => this.activateSidebar());
@@ -93,6 +147,21 @@ export default class HonchoPlugin extends Plugin {
 						item.setTitle("Ingest into Honcho")
 							.setIcon("upload")
 							.onClick(() => this.runIngest(file));
+					});
+					menu.addItem((item) => {
+						item.setTitle("Ingest + linked notes")
+							.setIcon("git-branch")
+							.onClick(() => this.runIngestLinked(file));
+					});
+					menu.addItem((item) => {
+						item.setTitle("Chat about this note")
+							.setIcon("message-circle")
+							.onClick(() => this.openContextualChat(file));
+					});
+					menu.addItem((item) => {
+						item.setTitle("Push as peer card")
+							.setIcon("user-check")
+							.onClick(() => this.runPushPeerCard(file));
 					});
 				}
 				if (file instanceof TFolder) {
@@ -255,6 +324,19 @@ export default class HonchoPlugin extends Plugin {
 		}
 	}
 
+	private async runIngestLinked(file: TFile): Promise<void> {
+		try {
+			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
+			const ctx = createIngestContext(
+				this.app, client, workspaceId, peerId, observedPeerId, this.settings.trackFrontmatter
+			);
+			const total = await ingestLinked(ctx, file, this.settings.linkDepth);
+			new Notice(`Ingested ${file.basename} + linked: ${total} message${total !== 1 ? "s" : ""}`);
+		} catch (err) {
+			new Notice(`Ingest failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
 	private async runIngestFolder(folder: TFolder): Promise<void> {
 		try {
 			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
@@ -269,7 +351,6 @@ export default class HonchoPlugin extends Plugin {
 	}
 
 	private runIngestFolderPicker(): void {
-		// Use a simple prompt - Obsidian doesn't have a native folder picker command
 		const folders = this.app.vault.getAllLoadedFiles()
 			.filter((f): f is TFolder => f instanceof TFolder && f.path !== "/");
 
@@ -278,7 +359,6 @@ export default class HonchoPlugin extends Plugin {
 			return;
 		}
 
-		// Use the fuzzy suggest modal approach
 		const { FuzzySuggestModal } = require("obsidian") as typeof import("obsidian");
 
 		class FolderPicker extends FuzzySuggestModal<TFolder> {
@@ -306,7 +386,6 @@ export default class HonchoPlugin extends Plugin {
 	}
 
 	private runIngestByTagPicker(): void {
-		// Collect all tags from the vault
 		const tagSet = new Set<string>();
 		for (const file of this.app.vault.getMarkdownFiles()) {
 			const cache = this.app.metadataCache.getFileCache(file);
@@ -381,10 +460,73 @@ export default class HonchoPlugin extends Plugin {
 
 	private async openChat(): Promise<void> {
 		try {
-			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
+			const { client, workspaceId, observedPeerId } = await this.ensureInitialized();
 			new HonchoChatModal(this.app, client, workspaceId, observedPeerId).open();
 		} catch (err) {
 			new Notice(`${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	private async openContextualChat(file: TFile): Promise<void> {
+		try {
+			const { client, workspaceId, observedPeerId } = await this.ensureInitialized();
+			const cache = this.app.metadataCache.getFileCache(file);
+			const noteContext: NoteContext = {
+				title: file.basename,
+				tags: (cache?.tags ?? []).map((t) => t.tag),
+				headings: (cache?.headings ?? []).map((h) => h.heading),
+			};
+			new HonchoChatModal(this.app, client, workspaceId, observedPeerId, noteContext).open();
+		} catch (err) {
+			new Notice(`${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// Peer Card
+	// -----------------------------------------------------------------------
+
+	private async runPushPeerCard(file: TFile): Promise<void> {
+		try {
+			const { client, workspaceId, observedPeerId } = await this.ensureInitialized();
+			const ctx = createSyncContext(this.app, client, workspaceId, observedPeerId);
+			await pushPeerCardFromNote(ctx, file);
+		} catch (err) {
+			new Notice(`Failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// Session Manager
+	// -----------------------------------------------------------------------
+
+	private async openSessionManager(): Promise<void> {
+		try {
+			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
+			new SessionManagerModal(
+				this.app,
+				client,
+				workspaceId,
+				peerId,
+				observedPeerId,
+				this.settings.trackFrontmatter
+			).open();
+		} catch (err) {
+			new Notice(`${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// Dream
+	// -----------------------------------------------------------------------
+
+	private async runScheduleDream(): Promise<void> {
+		try {
+			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
+			await client.scheduleDream(workspaceId, peerId, { observed: observedPeerId });
+			new Notice("Dream scheduled -- Honcho will process ingested material");
+		} catch (err) {
+			new Notice(`Failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
 

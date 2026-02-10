@@ -1,5 +1,11 @@
-import { App, Modal, Setting, normalizePath, TFile } from "obsidian";
+import { App, MarkdownRenderer, Modal, Setting, normalizePath, TFile } from "obsidian";
 import type { HonchoClient, ReasoningLevel } from "../honcho-client";
+
+export interface NoteContext {
+	title: string;
+	tags: string[];
+	headings: string[];
+}
 
 interface ChatMessage {
 	role: "user" | "assistant";
@@ -10,21 +16,25 @@ export class HonchoChatModal extends Modal {
 	private client: HonchoClient;
 	private workspaceId: string;
 	private peerId: string;
+	private noteContext: NoteContext | null;
 	private messages: ChatMessage[] = [];
 	private reasoningLevel: ReasoningLevel = "medium";
 	private chatEl: HTMLElement | null = null;
 	private inputEl: HTMLTextAreaElement | null = null;
+	private sending = false;
 
 	constructor(
 		app: App,
 		client: HonchoClient,
 		workspaceId: string,
-		peerId: string
+		peerId: string,
+		noteContext?: NoteContext
 	) {
 		super(app);
 		this.client = client;
 		this.workspaceId = workspaceId;
 		this.peerId = peerId;
+		this.noteContext = noteContext ?? null;
 	}
 
 	onOpen(): void {
@@ -34,7 +44,17 @@ export class HonchoChatModal extends Modal {
 
 		// Header
 		const header = contentEl.createDiv({ cls: "honcho-chat-header" });
-		header.createEl("h2", { text: "Ask Honcho" });
+		if (this.noteContext) {
+			header.createEl("h2", { text: `Ask Honcho \u2014 ${this.noteContext.title}` });
+			if (this.noteContext.tags.length > 0) {
+				const tagBar = header.createDiv({ cls: "honcho-chat-context-tags" });
+				for (const tag of this.noteContext.tags.slice(0, 6)) {
+					tagBar.createEl("span", { text: tag, cls: "honcho-context-tag" });
+				}
+			}
+		} else {
+			header.createEl("h2", { text: "Ask Honcho" });
+		}
 
 		// Reasoning level
 		new Setting(header)
@@ -58,7 +78,9 @@ export class HonchoChatModal extends Modal {
 		const inputArea = contentEl.createDiv({ cls: "honcho-chat-input-area" });
 		this.inputEl = inputArea.createEl("textarea", {
 			cls: "honcho-chat-input",
-			placeholder: "Ask something about your identity...",
+			placeholder: this.noteContext
+				? `Ask about "${this.noteContext.title}" or your identity...`
+				: "Ask something about your identity...",
 		} as DomElementInfo & { placeholder: string });
 		this.inputEl.rows = 3;
 
@@ -92,38 +114,90 @@ export class HonchoChatModal extends Modal {
 		this.contentEl.empty();
 	}
 
+	/**
+	 * Build a search_query from note context to focus
+	 * the chat's representation on relevant material.
+	 */
+	private buildSearchQuery(): string | undefined {
+		if (!this.noteContext) return undefined;
+		return [
+			this.noteContext.title,
+			...this.noteContext.tags,
+			...this.noteContext.headings.slice(0, 3),
+		].join(" ");
+	}
+
 	private async sendMessage(): Promise<void> {
-		if (!this.inputEl || !this.chatEl) return;
+		if (!this.inputEl || !this.chatEl || this.sending) return;
 		const query = this.inputEl.value.trim();
 		if (!query) return;
 
+		this.sending = true;
 		this.inputEl.value = "";
 		this.messages.push({ role: "user", content: query });
 		this.renderMessages();
 
-		// Show loading
-		const loadingEl = this.chatEl.createDiv({ cls: "honcho-chat-loading" });
-		loadingEl.setText("Thinking...");
+		// Create streaming response bubble
+		const bubble = this.chatEl.createDiv({
+			cls: "honcho-chat-bubble honcho-chat-assistant honcho-chat-streaming",
+		});
+		const contentEl = bubble.createDiv({ cls: "honcho-chat-stream-content" });
+		contentEl.setText("...");
 		this.chatEl.scrollTop = this.chatEl.scrollHeight;
 
+		let accumulated = "";
+
+		// Build the actual query: if we have note context, prepend it
+		const contextualQuery = this.noteContext
+			? `[Context: viewing "${this.noteContext.title}"${this.noteContext.tags.length > 0 ? `, tags: ${this.noteContext.tags.join(", ")}` : ""}]\n\n${query}`
+			: query;
+
 		try {
-			const resp = await this.client.peerChat(
+			const stream = this.client.peerChatStream(
 				this.workspaceId,
 				this.peerId,
-				query,
+				contextualQuery,
 				{ reasoning_level: this.reasoningLevel }
 			);
 
-			loadingEl.remove();
-			const content = resp.content ?? "No response.";
-			this.messages.push({ role: "assistant", content });
-			this.renderMessages();
+			for await (const event of stream) {
+				if (event.done) break;
+				if (event.delta?.content) {
+					accumulated += event.delta.content;
+					contentEl.empty();
+					await MarkdownRenderer.render(
+						this.app,
+						accumulated,
+						contentEl,
+						"",
+						this
+					);
+					this.chatEl!.scrollTop = this.chatEl!.scrollHeight;
+				}
+			}
 		} catch (err) {
-			loadingEl.remove();
-			const errMsg = err instanceof Error ? err.message : String(err);
-			this.messages.push({ role: "assistant", content: `Error: ${errMsg}` });
-			this.renderMessages();
+			if (!accumulated) {
+				// Streaming failed entirely -- fall back to non-streaming
+				try {
+					const resp = await this.client.peerChat(
+						this.workspaceId,
+						this.peerId,
+						contextualQuery,
+						{ reasoning_level: this.reasoningLevel }
+					);
+					accumulated = resp.content ?? "No response.";
+				} catch (fallbackErr) {
+					accumulated = `Error: ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`;
+				}
+			}
 		}
+
+		// Finalize: replace streaming bubble with rendered content
+		bubble.removeClass("honcho-chat-streaming");
+		const content = accumulated || "No response.";
+		this.messages.push({ role: "assistant", content });
+		this.renderMessages();
+		this.sending = false;
 	}
 
 	private renderMessages(): void {
@@ -134,7 +208,19 @@ export class HonchoChatModal extends Modal {
 			const bubble = this.chatEl.createDiv({
 				cls: `honcho-chat-bubble honcho-chat-${msg.role}`,
 			});
-			bubble.setText(msg.content);
+			if (msg.role === "assistant") {
+				// Render assistant messages as markdown
+				const contentDiv = bubble.createDiv();
+				MarkdownRenderer.render(
+					this.app,
+					msg.content,
+					contentDiv,
+					"",
+					this
+				);
+			} else {
+				bubble.setText(msg.content);
+			}
 		}
 
 		this.chatEl.scrollTop = this.chatEl.scrollHeight;
@@ -148,11 +234,17 @@ export class HonchoChatModal extends Modal {
 			`honcho_chat: ${new Date().toISOString()}`,
 			`honcho_peer: ${this.peerId}`,
 			`reasoning_level: ${this.reasoningLevel}`,
-			"---",
-			"",
-			"## Honcho Conversation",
-			"",
 		];
+
+		if (this.noteContext) {
+			lines.push(`honcho_context_note: "${this.noteContext.title}"`);
+		}
+
+		lines.push("---", "", "## Honcho Conversation", "");
+
+		if (this.noteContext) {
+			lines.push(`*Context: ${this.noteContext.title}*`, "");
+		}
 
 		for (const msg of this.messages) {
 			const label = msg.role === "user" ? "**You**" : "**Honcho**";

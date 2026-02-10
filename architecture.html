@@ -1,0 +1,1282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>obsidian-honcho: Architecture Deep Dive</title>
+<style>
+  :root {
+    --bg:             #0b0e14;
+    --bg-surface:     #11151c;
+    --bg-elevated:    #181d27;
+    --bg-code:        #0d1018;
+    --fg:             #c9d1d9;
+    --fg-bright:      #e6edf3;
+    --fg-muted:       #6e7681;
+    --fg-subtle:      #484f58;
+    --accent:         #7eb8f6;
+    --accent-dim:     #3d6ea5;
+    --accent-glow:    rgba(126, 184, 246, 0.08);
+    --green:          #7ee6a8;
+    --green-dim:      #2ea04f;
+    --orange:         #e6a855;
+    --red:            #f47067;
+    --purple:         #bc8cff;
+    --cyan:           #56d4dd;
+    --border:         #21262d;
+    --border-subtle:  #161b22;
+    --radius:         6px;
+    --font-sans:      'New York', ui-serif, 'Iowan Old Style', 'Apple Garamond', Baskerville, 'Times New Roman', 'Noto Emoji', serif;
+    --font-mono:      'Departure Mono', 'Noto Emoji', monospace;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; scroll-padding-top: 2rem; }
+
+  body {
+    font-family: var(--font-sans);
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.7;
+    font-size: 15px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .container {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 3rem 2rem 6rem;
+  }
+
+  .hero {
+    text-align: center;
+    padding: 4rem 0 3rem;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 3rem;
+  }
+  .hero h1 {
+    font-family: var(--font-mono);
+    font-size: 2.4rem;
+    font-weight: 700;
+    color: var(--fg-bright);
+    letter-spacing: -0.03em;
+    margin-bottom: 0.5rem;
+  }
+  .hero h1 span { color: var(--accent); }
+  .hero .subtitle {
+    font-family: var(--font-sans);
+    color: var(--fg-muted);
+    font-size: 0.92rem;
+    max-width: 540px;
+    margin: 0 auto;
+    line-height: 1.6;
+  }
+  .hero .meta {
+    margin-top: 1.5rem;
+    display: flex;
+    justify-content: center;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+  }
+  .hero .meta span {
+    font-size: 0.8rem;
+    color: var(--fg-subtle);
+    font-family: var(--font-mono);
+  }
+  .hero .meta span a {
+    color: var(--accent-dim);
+    text-decoration: none;
+  }
+  .hero .meta span a:hover { color: var(--accent); }
+
+  .toc {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.5rem 2rem;
+    margin-bottom: 3rem;
+  }
+  .toc h2 {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--fg-muted);
+    margin-bottom: 1rem;
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+  .toc ol {
+    list-style: none;
+    counter-reset: toc;
+    columns: 2;
+    column-gap: 2rem;
+  }
+  .toc li {
+    counter-increment: toc;
+    break-inside: avoid;
+    margin-bottom: 0.35rem;
+  }
+  .toc li::before {
+    content: counter(toc, decimal-leading-zero) " ";
+    color: var(--fg-subtle);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    margin-right: 0.25rem;
+  }
+  .toc a {
+    font-family: var(--font-mono);
+    color: var(--fg);
+    text-decoration: none;
+    font-size: 0.82rem;
+    transition: color 0.15s;
+  }
+  .toc a:hover { color: var(--accent); }
+
+  section { margin-bottom: 4rem; }
+  section + section { padding-top: 1rem; }
+
+  h2 {
+    font-family: var(--font-mono);
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: var(--fg-bright);
+    letter-spacing: -0.01em;
+    margin-bottom: 1.25rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+  h3 {
+    font-family: var(--font-mono);
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--fg-bright);
+    margin-top: 2rem;
+    margin-bottom: 0.75rem;
+  }
+  h4 {
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--accent);
+    margin-top: 1.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  p { margin-bottom: 1rem; font-size: 0.95rem; line-height: 1.75; }
+  strong { color: var(--fg-bright); font-weight: 600; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; font-size: 0.93rem; line-height: 1.7; }
+  li { margin-bottom: 0.35rem; }
+  li::marker { color: var(--fg-subtle); }
+
+  .table-wrap { overflow-x: auto; margin-bottom: 1.5rem; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.88rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  th {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--fg-muted);
+    background: var(--bg-surface);
+    border-bottom-color: var(--border);
+    white-space: nowrap;
+  }
+  td { font-family: var(--font-sans); font-size: 0.88rem; color: var(--fg); }
+  tr:hover td { background: var(--accent-glow); }
+  td code {
+    background: var(--bg-elevated);
+    padding: 0.15em 0.4em;
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 0.82em;
+    color: var(--cyan);
+  }
+
+  pre {
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem 1.5rem;
+    overflow-x: auto;
+    margin-bottom: 1.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.65;
+    color: var(--fg);
+  }
+  pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+  code { font-family: var(--font-mono); font-size: 0.85em; }
+  p code, li code {
+    background: var(--bg-elevated);
+    padding: 0.15em 0.4em;
+    border-radius: 3px;
+    color: var(--cyan);
+    font-size: 0.85em;
+  }
+
+  .kw { color: var(--purple); }
+  .str { color: var(--green); }
+  .cm { color: var(--fg-subtle); font-style: italic; }
+  .num { color: var(--orange); }
+  .key { color: var(--accent); }
+
+  .mermaid {
+    margin: 2rem -10%;
+    padding: 1.5rem 0;
+    text-align: center;
+    width: 120%;
+  }
+  .mermaid svg { max-width: 100%; height: auto; }
+
+  .callout {
+    font-family: var(--font-sans);
+    background: var(--bg-surface);
+    border-left: 3px solid var(--accent-dim);
+    border-radius: 0 var(--radius) var(--radius) 0;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.5rem;
+    font-size: 0.88rem;
+    color: var(--fg-muted);
+    line-height: 1.6;
+  }
+  .callout strong { font-family: var(--font-mono); color: var(--fg-bright); }
+  .callout.success { border-left-color: var(--green-dim); }
+  .callout.warn { border-left-color: var(--orange); }
+
+  .badge {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0.2em 0.6em;
+    border-radius: 3px;
+    vertical-align: middle;
+    margin-left: 0.4rem;
+  }
+  .badge-done { background: var(--green-dim); color: #fff; }
+  .badge-wip { background: var(--orange); color: #0b0e14; }
+  .badge-todo { background: var(--fg-subtle); color: var(--fg); }
+
+  .checklist { list-style: none; padding-left: 0; }
+  .checklist li { padding-left: 1.5rem; position: relative; margin-bottom: 0.5rem; }
+  .checklist li::before {
+    position: absolute;
+    left: 0;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+  }
+  .checklist li.done { color: var(--fg-muted); }
+  .checklist li.done::before { content: "\2713"; color: var(--green); }
+  .checklist li.todo::before { content: "\25CB"; color: var(--fg-subtle); }
+  .checklist li.wip::before { content: "\25D4"; color: var(--orange); }
+
+  .compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin-bottom: 2rem;
+  }
+  .compare-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+  }
+  .compare-card h4 { margin-top: 0; font-size: 0.82rem; }
+  .compare-card.after { border-color: var(--accent-dim); }
+  .compare-card ul { font-family: var(--font-mono); padding-left: 1.25rem; font-size: 0.8rem; }
+
+  hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 3rem 0;
+  }
+
+  @media (max-width: 640px) {
+    .container { padding: 2rem 1rem 4rem; }
+    .hero h1 { font-size: 1.6rem; }
+    .toc ol { columns: 1; }
+    .compare { grid-template-columns: 1fr; }
+    table { font-size: 0.8rem; }
+    th, td { padding: 0.4rem 0.6rem; }
+  }
+
+  .progress-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 2px;
+    background: var(--accent);
+    z-index: 999;
+    transition: width 0.1s linear;
+  }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Emoji&display=swap" rel="stylesheet">
+<style>
+  @font-face {
+    font-family: 'Departure Mono';
+    src: url('https://cdn.jsdelivr.net/gh/rektdeckard/departure-mono@latest/fonts/DepartureMono-Regular.woff2') format('woff2');
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+  }
+</style>
+</head>
+<body>
+
+<div class="progress-bar" id="progress"></div>
+
+<div class="container">
+
+<!-- =============== HERO =============== -->
+<header class="hero">
+  <h1>obsidian<span>-honcho</span></h1>
+  <p class="subtitle">How the act of writing becomes identity. A bidirectional bridge between Obsidian's structural knowledge and Honcho's memory platform.</p>
+  <div class="meta">
+    <span><a href="https://github.com/erosika/obsidian-honcho">erosika/obsidian-honcho</a></span>
+    <span>TypeScript / Obsidian Plugin + MCP</span>
+    <span>February 2026</span>
+  </div>
+</header>
+
+<!-- =============== TOC =============== -->
+<nav class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#setup">Setup</a></li>
+    <li><a href="#core-thesis">Core Thesis</a></li>
+    <li><a href="#data-flow">Bidirectional Data Flow</a></li>
+    <li><a href="#structural-signals">Structural Signals</a></li>
+    <li><a href="#observation-pipeline">Observation Pipeline</a></li>
+    <li><a href="#dreaming">Dreaming & Consolidation</a></li>
+    <li><a href="#peer-architecture">Peer Architecture</a></li>
+    <li><a href="#graph-ingestion">Graph-Aware Ingestion</a></li>
+    <li><a href="#streaming-chat">Streaming Dialectic Chat</a></li>
+    <li><a href="#mcp-server">MCP Server</a></li>
+    <li><a href="#session-management">Session Management</a></li>
+    <li><a href="#explorer-and-context">Conclusion Explorer & Contextual Intelligence</a></li>
+    <li><a href="#code-blocks">Inline Code Blocks</a></li>
+    <li><a href="#file-structure">File Structure</a></li>
+    <li><a href="#configuration">Configuration</a></li>
+    <li><a href="#progress">Progress</a></li>
+    <li><a href="#api-proposals">P.S. &mdash; API Proposals</a></li>
+  </ol>
+</nav>
+
+<!-- =============== SETUP =============== -->
+<section id="setup">
+  <h2>Setup</h2>
+
+  <h3>1. Build from source</h3>
+  <pre><code><span class="fn">git</span> clone https://github.com/erosika/obsidian-honcho.git
+<span class="fn">cd</span> obsidian-honcho
+<span class="fn">bun</span> install
+<span class="fn">bun</span> run build     <span class="cm"># produces main.js</span></code></pre>
+
+  <h3>2. Install into your vault</h3>
+  <pre><code><span class="cm"># Create the plugin directory</span>
+<span class="fn">mkdir</span> -p <span class="str">"/path/to/your/vault/.obsidian/plugins/honcho"</span>
+
+<span class="cm"># Copy the three required files</span>
+<span class="fn">cp</span> main.js manifest.json styles.css <span class="str">"/path/to/your/vault/.obsidian/plugins/honcho/"</span></code></pre>
+
+  <h3>3. Enable in Obsidian</h3>
+  <ol>
+    <li>Open Obsidian</li>
+    <li>Settings &#x2192; Community plugins</li>
+    <li>Turn off <strong>Restricted mode</strong> (allows third-party plugins)</li>
+    <li>Find <strong>Honcho</strong> in the installed list, toggle it on</li>
+  </ol>
+
+  <h3>4. Configure</h3>
+  <p>Settings &#x2192; Honcho:</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Setting</th><th>What to enter</th></tr></thead>
+      <tbody>
+        <tr><td>API key</td><td>Your Honcho API key</td></tr>
+        <tr><td>Base URL</td><td><code>https://api.honcho.dev</code> (default)</td></tr>
+        <tr><td>Workspace name</td><td>Leave empty to use vault name, or enter a shared workspace like <code>default</code></td></tr>
+        <tr><td>Observer peer</td><td><code>obsidian</code> (default) &mdash; this is who sends messages</td></tr>
+        <tr><td>Observed peer</td><td>Leave empty for self-observation, or enter e.g. <code>eri</code> for cross-peer</td></tr>
+        <tr><td>Link traversal depth</td><td>1&ndash;3 &mdash; how deep "Ingest + linked notes" follows wiki-links</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>Hit <strong>Test connection</strong> to verify. You should see "Connected to Honcho."</p>
+
+  <h3>5. First ingestion</h3>
+  <ol>
+    <li>Open a note you want to feed into Honcho</li>
+    <li>Cmd+P &#x2192; <strong>Ingest current note</strong></li>
+    <li>You'll see a notice: "Ingested {note}: N messages"</li>
+    <li>Wait 1&ndash;2 minutes for Honcho's observation pipeline to derive conclusions</li>
+    <li>Cmd+P &#x2192; <strong>Open Honcho sidebar</strong> to see results</li>
+  </ol>
+
+  <h3>6. Bulk ingestion</h3>
+  <p>For a faster start, ingest a whole folder or tag:</p>
+  <ul>
+    <li>Right-click a folder &#x2192; <strong>Ingest folder into Honcho</strong></li>
+    <li>Cmd+P &#x2192; <strong>Ingest notes by tag</strong> &#x2192; pick a tag</li>
+  </ul>
+  <p>After bulk ingestion the plugin auto-schedules a dream for consolidation.</p>
+
+  <h3>7. All commands</h3>
+  <p>Open the command palette (Cmd+P) and type "Honcho" to see everything:</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+      <tbody>
+        <tr><td>Open Honcho sidebar</td><td>Sidebar with peer card, representation, conclusion explorer, contextual rep</td></tr>
+        <tr><td>Ingest current note</td><td>Send active note to Honcho with full structural context</td></tr>
+        <tr><td>Ingest current note + linked notes</td><td>Transitive ingestion following wiki-links up to configured depth</td></tr>
+        <tr><td>Ingest folder</td><td>Pick a folder, ingest all .md files</td></tr>
+        <tr><td>Ingest notes by tag</td><td>Pick a tag, ingest all matching notes</td></tr>
+        <tr><td>Chat with Honcho</td><td>Open dialectic chat (generic)</td></tr>
+        <tr><td>Chat about this note</td><td>Open chat pre-seeded with active note's title, tags, headings</td></tr>
+        <tr><td>Search Honcho memory</td><td>Semantic search across all conclusions</td></tr>
+        <tr><td>Manage sessions</td><td>View ingested sessions, queue progress, re-ingest, delete</td></tr>
+        <tr><td>Generate identity note</td><td>Create a vault note from peer card + representation</td></tr>
+        <tr><td>Pull conclusions into vault</td><td>Create a vault note with all conclusions (tagged #honcho)</td></tr>
+        <tr><td>Push note as peer card</td><td>Parse bullet points from active note, set as peer card</td></tr>
+        <tr><td>Schedule Honcho dream</td><td>Manually trigger memory consolidation</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>8. Code blocks (reading view)</h3>
+  <p>Embed live Honcho data in any note:</p>
+  <pre><code><span class="cm">&#96;&#96;&#96;honcho</span>
+search: values and priorities
+limit: 5
+<span class="cm">&#96;&#96;&#96;</span></code></pre>
+  <p>Also: <code>card</code>, <code>representation</code>, <code>conclusions 10</code>. Switch to reading view to see results.</p>
+
+  <h3>9. Auto-sync (optional)</h3>
+  <p>Settings &#x2192; Honcho &#x2192; toggle <strong>Auto-sync on save</strong>. Optionally filter by tags or folders so only relevant notes get sent automatically. Debounced to 5 seconds per file.</p>
+
+  <h3>10. MCP server (optional)</h3>
+  <p>For vault awareness from outside Obsidian (Claude Code, Claude Desktop, other MCP clients):</p>
+  <pre><code><span class="fn">cd</span> obsidian-honcho/mcp
+<span class="fn">bun</span> install</code></pre>
+  <p>Then add to your MCP config:</p>
+  <pre><code>{
+  <span class="key">"mcpServers"</span>: {
+    <span class="key">"honcho-vault"</span>: {
+      <span class="key">"command"</span>: <span class="str">"bun"</span>,
+      <span class="key">"args"</span>: [<span class="str">"run"</span>, <span class="str">"path/to/obsidian-honcho/mcp/server.ts"</span>],
+      <span class="key">"env"</span>: {
+        <span class="str">"HONCHO_API_KEY"</span>: <span class="str">"your-key"</span>,
+        <span class="str">"VAULT_PATH"</span>: <span class="str">"/path/to/your/vault"</span>
+      }
+    }
+  }
+}</code></pre>
+</section>
+
+<!-- =============== CORE THESIS =============== -->
+<section id="core-thesis">
+  <h2>Core Thesis</h2>
+  <p>The core question: <strong>how does the act of writing become identity?</strong></p>
+  <p>Every note, tag, link, and folder in an Obsidian vault is a signal about who you are and how you think. obsidian-honcho makes that signal legible to Honcho's memory platform -- and in return, Honcho enriches the vault with synthesized self-knowledge.</p>
+
+  <div class="callout">
+    <strong>Two-way street.</strong> This isn't a one-directional sync. The vault feeds Honcho structural knowledge about how ideas connect, how you organize thought, what you return to. Honcho feeds back consolidated identity -- conclusions, representations, peer cards -- that live as first-class vault documents.
+  </div>
+
+  <h3>What makes vault content special</h3>
+  <p>Unlike chat transcripts, vault content is <strong>curated and structured</strong>. It has:</p>
+  <ul>
+    <li>Explicit topology -- links, backlinks, transclusions form a knowledge graph &#x1F578;</li>
+    <li>Hierarchical organization -- folders, headings, nested tags encode salience &#x1F4C2;</li>
+    <li>Temporal depth -- creation dates, modification history, edit patterns reveal what matters &#x231B;</li>
+    <li>Intentional metadata -- frontmatter, tags, and properties are explicit declarations &#x1F3F7;</li>
+  </ul>
+
+  <h3>The Obsidian advantage</h3>
+  <p>Obsidian's API exposes all of this structure programmatically:</p>
+  <ul>
+    <li><code>metadataCache.resolvedLinks</code> -- the complete bidirectional link graph as an adjacency list</li>
+    <li><code>CachedMetadata</code> per file -- tags, headings with levels, sections, list items (with task status), frontmatter, links, embeds</li>
+    <li><code>file.stat</code> -- creation time, modification time, file size as temporal context</li>
+    <li><code>processFrontMatter()</code> -- atomic read-modify-write for Honcho metadata back into notes</li>
+  </ul>
+</section>
+
+<!-- =============== DATA FLOW =============== -->
+<section id="data-flow">
+  <h2>Bidirectional Data Flow</h2>
+
+  <div class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#1f3150', 'primaryTextColor': '#c9d1d9', 'primaryBorderColor': '#3d6ea5', 'lineColor': '#3d6ea5', 'secondaryColor': '#162030', 'tertiaryColor': '#11151c', 'edgeLabelBackground': '#0b0e14' }}}%%
+flowchart LR
+    N["Notes + Tags<br/>Links + Folders"] -->|ingest| CH["Chunk &<br/>Context"]
+    CH -->|messages| S["Sessions"]
+    S --> O["Observe"]
+    O --> C["Conclusions"]
+    C --> D["Dream"]
+    C --> R["Represent"]
+    R -->|sync back| F["Frontmatter"]
+    R <-->|dialectic| Q["Chat"]
+
+    style N fill:#162030,stroke:#3d6ea5,color:#c9d1d9
+    style F fill:#162030,stroke:#3d6ea5,color:#c9d1d9
+    style CH fill:#1f3150,stroke:#3d6ea5,color:#c9d1d9
+    style Q fill:#1f3150,stroke:#3d6ea5,color:#c9d1d9
+    style S fill:#11151c,stroke:#3d6ea5,color:#c9d1d9
+    style O fill:#11151c,stroke:#3d6ea5,color:#c9d1d9
+    style C fill:#11151c,stroke:#3d6ea5,color:#c9d1d9
+    style D fill:#11151c,stroke:#3d6ea5,color:#c9d1d9
+    style R fill:#11151c,stroke:#3d6ea5,color:#c9d1d9
+  </div>
+
+  <h3>Vault &#x2192; Honcho</h3>
+  <ul>
+    <li><strong>Structural preamble</strong> -- before any content, each session receives a message encoding the note's position in the knowledge graph: folder path, tags, outgoing links, backlinks, heading hierarchy, creation/modification dates</li>
+    <li><strong>Content chunks</strong> -- markdown split at heading/paragraph/sentence boundaries, each as a message with source metadata</li>
+    <li><strong>Temporal context</strong> -- messages carry <code>created_at</code> timestamps from the file's actual dates, not ingestion time</li>
+    <li><strong>Session configuration</strong> -- each session enables reasoning, dreaming, and summarization</li>
+  </ul>
+
+  <h3>Honcho &#x2192; Vault</h3>
+  <ul>
+    <li><strong>Frontmatter tracking</strong> -- <code>honcho_synced</code>, <code>honcho_session_id</code>, <code>honcho_message_count</code> written atomically via <code>processFrontMatter()</code></li>
+    <li><strong>Identity notes</strong> -- peer card + representation rendered as markdown documents in the vault</li>
+    <li><strong>Conclusions notes</strong> -- all derived observations pulled into a browsable vault document</li>
+    <li><strong>Dialectic chat</strong> -- streaming conversation grounded in vault-derived identity, saveable as vault notes</li>
+  </ul>
+</section>
+
+<!-- =============== STRUCTURAL SIGNALS =============== -->
+<section id="structural-signals">
+  <h2>Structural Signals</h2>
+  <p>Every ingested note carries a structural preamble -- a machine-readable summary of the note's context within the vault.</p>
+
+  <h3>What gets extracted</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Signal</th><th>Source</th><th>Example</th></tr></thead>
+      <tbody>
+        <tr><td>Tags</td><td><code>metadataCache.tags</code> + frontmatter</td><td><code>#identity, #philosophy</code></td></tr>
+        <tr><td>Headings</td><td><code>cache.headings[]</code></td><td><code># Core Values > ## Integrity</code></td></tr>
+        <tr><td>Outgoing links</td><td><code>cache.links[]</code></td><td><code>Stoicism, Marcus Aurelius</code></td></tr>
+        <tr><td>Backlinks</td><td>Inverted <code>resolvedLinks</code></td><td><code>Daily Notes/2026-02-01, Reading List</code></td></tr>
+        <tr><td>Folder path</td><td><code>file.parent.path</code></td><td><code>identity/core</code></td></tr>
+        <tr><td>Created date</td><td><code>file.stat.ctime</code></td><td><code>2025-11-15</code></td></tr>
+        <tr><td>Modified date</td><td><code>file.stat.mtime</code></td><td><code>2026-02-09</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Preamble format</h3>
+  <pre><code>[Note: Core Values]
+Folder: identity/core
+Tags: #identity, #philosophy, #values
+Structure: # Core Values > ## Integrity > ## Curiosity > ## Craft
+Links to: Stoicism, Marcus Aurelius, Relena Peacecraft
+Referenced by: Daily Notes/2026-02-01, Vision Document
+Created: 2025-11-15
+Modified: 2026-02-09</code></pre>
+
+  <div class="callout">
+    <strong>Why preambles matter.</strong> Honcho's observation pipeline sees messages in sequence. By leading with structural context, every content chunk that follows is grounded in the note's semantic position. The deriver knows this isn't just text about integrity -- it's text about integrity that lives in <code>identity/core</code>, is tagged <code>#philosophy</code>, links to Stoicism, and was last edited today.
+  </div>
+
+  <h3>Session metadata schema</h3>
+  <pre><code>{
+  <span class="key">"source"</span>: <span class="str">"obsidian"</span>,
+  <span class="key">"source_type"</span>: <span class="str">"file"</span>,
+  <span class="key">"file_path"</span>: <span class="str">"identity/core/Core Values.md"</span>,
+  <span class="key">"file_name"</span>: <span class="str">"Core Values"</span>,
+  <span class="key">"folder"</span>: <span class="str">"identity/core"</span>,
+  <span class="key">"tags"</span>: [<span class="str">"#identity"</span>, <span class="str">"#philosophy"</span>],
+  <span class="key">"outgoing_links"</span>: [<span class="str">"Stoicism"</span>, <span class="str">"Marcus Aurelius"</span>],
+  <span class="key">"backlinks"</span>: [<span class="str">"Daily Notes/2026-02-01"</span>],
+  <span class="key">"heading_count"</span>: <span class="num">4</span>,
+  <span class="key">"created_at"</span>: <span class="str">"2025-11-15T00:00:00Z"</span>,
+  <span class="key">"modified_at"</span>: <span class="str">"2026-02-09T12:00:00Z"</span>,
+  <span class="key">"ingested_at"</span>: <span class="str">"2026-02-09T12:05:00Z"</span>
+}</code></pre>
+</section>
+
+<!-- =============== OBSERVATION PIPELINE =============== -->
+<section id="observation-pipeline">
+  <h2>Observation Pipeline</h2>
+  <p>Once messages land in Honcho, the observation pipeline takes over. This is Honcho's core intelligence loop -- no plugin code involved.</p>
+
+  <div class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#1f3150', 'primaryTextColor': '#c9d1d9', 'primaryBorderColor': '#3d6ea5', 'lineColor': '#3d6ea5', 'secondaryColor': '#162030', 'tertiaryColor': '#11151c', 'edgeLabelBackground': '#0b0e14' }}}%%
+flowchart TD
+    M["Messages land<br/>in session"] --> Q["Enqueue for<br/>observation"]
+    Q --> BM["Queue Manager<br/>batches by tokens"]
+    BM --> D["Deriver<br/>(LLM call)"]
+    D --> C["Conclusions<br/>saved to collection"]
+    C --> TD{"Document<br/>count > 50?"}
+    TD -->|yes| DR["Dream<br/>triggered"]
+    TD -->|no| W["Wait for<br/>more material"]
+    DR --> SU["Surprisal<br/>sampling"]
+    SU --> DE["Deduction<br/>specialist"]
+    DE --> IN["Induction<br/>specialist"]
+    IN --> PC["Peer card<br/>updated"]
+
+    style M fill:#162030,stroke:#3d6ea5,color:#c9d1d9
+    style Q fill:#162030,stroke:#3d6ea5,color:#c9d1d9
+    style BM fill:#1f3150,stroke:#3d6ea5,color:#c9d1d9
+    style D fill:#1f3150,stroke:#3d6ea5,color:#c9d1d9
+    style C fill:#11151c,stroke:#3d6ea5,color:#c9d1d9
+    style TD fill:#11151c,stroke:#3d6ea5,color:#c9d1d9
+    style DR fill:#11151c,stroke:#7eb8f6,color:#c9d1d9
+    style SU fill:#11151c,stroke:#7eb8f6,color:#c9d1d9
+    style DE fill:#11151c,stroke:#7eb8f6,color:#c9d1d9
+    style IN fill:#11151c,stroke:#7eb8f6,color:#c9d1d9
+    style PC fill:#11151c,stroke:#7eb8f6,color:#c9d1d9
+    style W fill:#11151c,stroke:#484f58,color:#6e7681
+  </div>
+
+  <h3>Batching</h3>
+  <p>The queue manager accumulates messages until a token threshold (1024) is reached, then sends the batch to the deriver. This means our chunk sizing matters -- chunks under ~500 tokens get batched together for efficient observation. The <code>chunkMarkdown()</code> function's 2000-char limit (~500 tokens) is calibrated to this.</p>
+
+  <h3>Deriver</h3>
+  <p>The deriver receives the batch plus existing conclusions as context, and generates new observations via <code>minimal_deriver_prompt</code>. Because we include structural preambles, the deriver can reason about <em>why</em> content exists where it does, not just what it says.</p>
+
+  <h3>Session configuration</h3>
+  <p>Each ingestion session enables:</p>
+  <pre><code>{
+  <span class="key">"reasoning"</span>: { <span class="key">"enabled"</span>: <span class="kw">true</span> },
+  <span class="key">"dream"</span>: { <span class="key">"enabled"</span>: <span class="kw">true</span> },
+  <span class="key">"summary"</span>: { <span class="key">"enabled"</span>: <span class="kw">true</span> }
+}</code></pre>
+</section>
+
+<!-- =============== DREAMING =============== -->
+<section id="dreaming">
+  <h2>Dreaming & Consolidation</h2>
+  <p>Honcho's dream system is where raw observations become higher-order self-knowledge. It fires automatically when the conclusion count exceeds 50 and 60 minutes have passed since the last activity -- or it can be triggered manually via the plugin.</p>
+
+  <h3>Dream phases</h3>
+  <ol>
+    <li><strong>Surprisal sampling</strong> -- selects the most surprising/novel conclusions for deeper analysis</li>
+    <li><strong>Deduction specialist</strong> -- up to 12 iterations, synthesizing specific conclusions into general principles</li>
+    <li><strong>Induction specialist</strong> -- up to 10 iterations, identifying patterns across the conclusion space</li>
+    <li><strong>Peer card update</strong> -- the biographical summary is regenerated from the enriched conclusion set</li>
+  </ol>
+
+  <div class="callout success">
+    <strong>Manual dream scheduling.</strong> After bulk ingestion (folder or tag), the plugin automatically calls <code>scheduleDream()</code> to bypass the idle timeout. You can also trigger it manually via the "Schedule Honcho dream" command or the session manager UI.
+  </div>
+
+  <h3>Why dreaming matters for vault content</h3>
+  <p>A vault with 50+ notes about philosophy, personal values, and creative work will produce 50+ raw observations. The dream system compresses these into identity-level conclusions: "values integrity and craft over efficiency," "draws on Stoic philosophy for decision-making," "creative work centers on narrative identity." These are the conclusions that drive representation quality.</p>
+</section>
+
+<!-- =============== PEER ARCHITECTURE =============== -->
+<section id="peer-architecture">
+  <h2>Peer Architecture</h2>
+  <p>The observer/observed model separates <em>who is feeding material</em> from <em>whose identity is being built</em>.</p>
+
+  <div class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#1f3150', 'primaryTextColor': '#c9d1d9', 'primaryBorderColor': '#3d6ea5', 'lineColor': '#3d6ea5', 'secondaryColor': '#162030', 'tertiaryColor': '#11151c', 'edgeLabelBackground': '#0b0e14' }}}%%
+flowchart TD
+    subgraph WS["Workspace"]
+        OP["obsidian peer<br/>(observer)"]
+        EP["eri peer<br/>(observed)"]
+        XP["other peer<br/>(observer)"]
+    end
+
+    OP -->|"observe_others: true"| S1["Session:<br/>obsidian:file:values.md"]
+    EP -->|"observe_me: true"| S1
+    XP -->|"observe_others: true"| S2["Session:<br/>other:conversation:123"]
+    EP -->|"observe_me: true"| S2
+
+    S1 --> C["Conclusions about eri"]
+    S2 --> C
+    C --> R["eri's Representation"]
+
+    style OP fill:#162030,stroke:#3d6ea5,color:#c9d1d9
+    style EP fill:#1f3150,stroke:#7eb8f6,color:#c9d1d9
+    style XP fill:#162030,stroke:#484f58,color:#6e7681
+    style S1 fill:#11151c,stroke:#3d6ea5,color:#c9d1d9
+    style S2 fill:#11151c,stroke:#484f58,color:#6e7681
+    style C fill:#11151c,stroke:#3d6ea5,color:#c9d1d9
+    style R fill:#11151c,stroke:#7eb8f6,color:#c9d1d9
+  </div>
+
+  <h3>Three operating modes</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Mode</th><th>Observer</th><th>Observed</th><th>Use Case</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Self-observation</td>
+          <td><code>obsidian</code></td>
+          <td><code>obsidian</code></td>
+          <td>Vault builds its own identity. Simple, isolated.</td>
+        </tr>
+        <tr>
+          <td>Cross-peer</td>
+          <td><code>obsidian</code></td>
+          <td><code>eri</code></td>
+          <td>Vault content feeds into a shared identity. Multiple observers contribute to one representation.</td>
+        </tr>
+        <tr>
+          <td>Separate workspace</td>
+          <td><code>obsidian</code></td>
+          <td><code>obsidian</code></td>
+          <td>Completely isolated workspace. No cross-contamination.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>All three are configurable in settings. The default is self-observation (observer = observed = "obsidian"), which is the simplest starting point. Setting an observed peer name like "eri" enables the cross-peer mode where multiple sources contribute to one identity.</p>
+</section>
+
+<!-- =============== GRAPH INGESTION =============== -->
+<section id="graph-ingestion">
+  <h2>Graph-Aware Ingestion</h2>
+  <p>The "Ingest + linked notes" command follows the vault's link graph transitively, ingesting not just the active note but everything it references.</p>
+
+  <h3>Algorithm</h3>
+  <pre><code><span class="kw">function</span> ingestLinked(file, depth):
+    queue = [(file, <span class="num">0</span>)]
+    visited = {}
+
+    <span class="kw">while</span> queue is not empty:
+        (current, currentDepth) = queue.shift()
+        <span class="kw">if</span> current in visited: <span class="kw">continue</span>
+        visited.add(current)
+
+        ingestNote(current)  <span class="cm">// with structural preamble</span>
+
+        <span class="kw">if</span> currentDepth < depth:
+            <span class="kw">for</span> link in current.outgoingLinks:
+                resolved = resolveLink(link)
+                <span class="kw">if</span> resolved and resolved not in visited:
+                    queue.push((resolved, currentDepth + <span class="num">1</span>))
+
+    scheduleDream()  <span class="cm">// consolidate after traversal</span></code></pre>
+
+  <h3>Link resolution</h3>
+  <p>Links are resolved via <code>metadataCache.getFirstLinkpathDest()</code>, which handles Obsidian's wiki-link resolution (shortest unique path, aliases, etc.). Only <code>.md</code> files are followed -- images, PDFs, and other embeds are skipped.</p>
+
+  <h3>Depth control</h3>
+  <p>The traversal depth is configurable (1-3, default 1). At depth 1, a note about "Stoicism" that links to "Marcus Aurelius" and "Epictetus" will ingest all three. At depth 2, it follows those notes' links too. Deeper traversal captures more context but produces more messages.</p>
+</section>
+
+<!-- =============== STREAMING CHAT =============== -->
+<section id="streaming-chat">
+  <h2>Streaming Dialectic Chat</h2>
+  <p>The chat modal uses Honcho's SSE streaming endpoint for real-time response rendering.</p>
+
+  <h3>Architecture</h3>
+  <ul>
+    <li><strong>Transport</strong>: Native <code>fetch()</code> with <code>Accept: text/event-stream</code> (bypasses <code>requestUrl</code> limitation)</li>
+    <li><strong>Protocol</strong>: Server-Sent Events. Each event is <code>data: {"delta": {"content": "..."}, "done": false}</code></li>
+    <li><strong>Rendering</strong>: Accumulated content is re-rendered as markdown via <code>MarkdownRenderer.render()</code> on each delta</li>
+    <li><strong>Fallback</strong>: If streaming fails, falls back to non-streaming <code>peerChat()</code></li>
+  </ul>
+
+  <h3>Reasoning levels</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Level</th><th>Description</th><th>Use Case</th></tr></thead>
+      <tbody>
+        <tr><td><code>minimal</code></td><td>Quick lookup, minimal inference</td><td>Simple factual queries</td></tr>
+        <tr><td><code>low</code></td><td>Light reasoning over conclusions</td><td>Pattern recall</td></tr>
+        <tr><td><code>medium</code></td><td>Balanced depth (default)</td><td>Most questions</td></tr>
+        <tr><td><code>high</code></td><td>Deep dialectic reasoning</td><td>Complex identity questions</td></tr>
+        <tr><td><code>max</code></td><td>Maximum depth, slowest</td><td>Philosophical exploration</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Conversations can be saved as vault notes with full frontmatter metadata (peer, reasoning level, timestamp).</p>
+</section>
+
+<!-- =============== MCP SERVER =============== -->
+<section id="mcp-server">
+  <h2>MCP Server</h2>
+  <p>A standalone MCP server (<code>mcp/server.ts</code>) exposes vault operations to any MCP-compatible client -- not just Obsidian. This means any tool that speaks MCP can interact with vault identity.</p>
+
+  <h3>Tools</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Tool</th><th>Direction</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>vault_ingest</code></td><td>Vault &#x2192; Honcho</td><td>Ingest a markdown note with structural context</td></tr>
+        <tr><td><code>vault_ingest_folder</code></td><td>Vault &#x2192; Honcho</td><td>Bulk ingest + dream scheduling</td></tr>
+        <tr><td><code>vault_search</code></td><td>Honcho &#x2192; Client</td><td>Semantic search across conclusions + messages</td></tr>
+        <tr><td><code>vault_status</code></td><td>Honcho &#x2192; Client</td><td>Workspace config, sessions, queue progress</td></tr>
+        <tr><td><code>vault_sync</code></td><td>Honcho &#x2192; Vault</td><td>Pull identity + conclusions into vault notes</td></tr>
+        <tr><td><code>vault_list</code></td><td>Vault &#x2192; Client</td><td>List notes with sync status and tags</td></tr>
+        <tr><td><code>vault_chat</code></td><td>Honcho &#x2194; Client</td><td>Dialectic reasoning grounded in vault identity</td></tr>
+        <tr><td><code>schedule_dream</code></td><td>Client &#x2192; Honcho</td><td>Trigger memory consolidation</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Configuration</h3>
+  <pre><code><span class="cm"># MCP config (Claude Code, Claude Desktop, etc.)</span>
+{
+  <span class="key">"mcpServers"</span>: {
+    <span class="key">"honcho-vault"</span>: {
+      <span class="key">"command"</span>: <span class="str">"bun"</span>,
+      <span class="key">"args"</span>: [<span class="str">"run"</span>, <span class="str">"path/to/obsidian-honcho/mcp/server.ts"</span>],
+      <span class="key">"env"</span>: {
+        <span class="str">"HONCHO_API_KEY"</span>: <span class="str">"your-key"</span>,
+        <span class="str">"VAULT_PATH"</span>: <span class="str">"/path/to/your/vault"</span>,
+        <span class="str">"HONCHO_WORKSPACE"</span>: <span class="str">"my-workspace"</span>,
+        <span class="str">"HONCHO_OBSERVER"</span>: <span class="str">"obsidian"</span>,
+        <span class="str">"HONCHO_OBSERVED"</span>: <span class="str">"eri"</span>
+      }
+    }
+  }
+}</code></pre>
+
+  <h3>How it differs from the Obsidian plugin</h3>
+  <p>The MCP server reads files directly from disk and parses frontmatter/links/tags manually (no access to Obsidian's MetadataCache). The Obsidian plugin has richer structural data from the live metadata cache, especially for backlinks and unresolved links. The MCP server is the right choice when you want vault awareness from outside Obsidian -- from other tools, automated pipelines, or standalone sessions.</p>
+</section>
+
+<!-- =============== SESSION MANAGEMENT =============== -->
+<section id="session-management">
+  <h2>Session Management</h2>
+  <p>The session manager modal provides visibility into what's been ingested and how it's being processed.</p>
+
+  <h3>Features</h3>
+  <ul>
+    <li><strong>Queue status</strong> -- progress bar showing observation pipeline progress (completed / total work units)</li>
+    <li><strong>Session list</strong> -- all Obsidian-originated sessions with file name, path, tags, ingestion date, active/inactive status</li>
+    <li><strong>Re-ingest</strong> -- re-process a note (updates existing session with fresh content)</li>
+    <li><strong>Delete</strong> -- remove a session and all its messages (async, marked inactive immediately)</li>
+    <li><strong>Dream scheduling</strong> -- manual trigger for memory consolidation</li>
+    <li><strong>Pagination</strong> -- handles vaults with hundreds of ingested notes</li>
+  </ul>
+
+  <h3>Session lifecycle</h3>
+  <p>Sessions use deterministic IDs: <code>obsidian:file:{relative_path}</code>. Re-ingesting a note reuses the same session, adding new messages. This means the observation pipeline sees the full history of a note's evolution, not just its current state.</p>
+</section>
+
+<!-- =============== EXPLORER & CONTEXT =============== -->
+<section id="explorer-and-context">
+  <h2>Conclusion Explorer & Contextual Intelligence</h2>
+  <p>Inspired by Craft.do's Collections model &mdash; inline databases with filtering, sorting, and saved views &mdash; the sidebar's conclusion list was replaced with a full explorer. The goal: conclusions are not a dump, they're a navigable identity surface.</p>
+
+  <h3>Explorer features</h3>
+  <ul>
+    <li><strong>Sort chips</strong> &mdash; Newest / Oldest toggle with active-state highlighting. One click to reverse the perspective.</li>
+    <li><strong>Text filter</strong> &mdash; Live filtering as you type. Narrows the conclusion list to matching content.</li>
+    <li><strong>Count display</strong> &mdash; Shows "12 of 47 conclusions" when filtered, "47 conclusions" when not.</li>
+    <li><strong>Pagination</strong> &mdash; 20 conclusions per page with navigation controls. Handles vaults with hundreds of derived observations.</li>
+  </ul>
+
+  <h3>Contextual representation</h3>
+  <p>The sidebar tracks the active note via <code>active-leaf-change</code>. When you're viewing a markdown file, a "Relevant to: {note}" section appears showing a <em>focused representation</em> built from the note's title, tags, and top headings as a <code>search_query</code> parameter. This transforms the sidebar from "here's everything Honcho knows" to "here's what Honcho knows that's relevant to what you're looking at right now."</p>
+
+  <h3>Combined API call</h3>
+  <p>The sidebar now uses <code>getPeerContext</code> (a single endpoint) instead of separate <code>getPeerCard</code> + <code>getPeerRepresentation</code> calls. Fewer round-trips, same data.</p>
+
+  <h3>Contextual chat</h3>
+  <p>The "Chat about this note" command opens a chat modal pre-seeded with the active note's context. The header shows the note title and tag chips. Each query is prefixed with <code>[Context: viewing "Note Title", tags: #tag1, #tag2]</code> so Honcho responds in relation to what you're reading. The <code>search_query</code> parameter on the underlying representation focuses the dialectic on relevant material.</p>
+
+  <h3>Peer card authorship</h3>
+  <p>"Push note as peer card" reads a note, parses each bullet point as a card item, and PUTs them via <code>setPeerCard</code>. This is direct identity authorship from the vault &mdash; the user curates who they are in their own notes, and the vault pushes it to Honcho. No pipeline intermediary.</p>
+
+  <h3>Nested tag mapping</h3>
+  <p>When pulling conclusions or generating identity notes, the plugin now writes nested Honcho tags into frontmatter:</p>
+  <pre><code><span class="key">tags</span>:
+  - <span class="str">honcho</span>
+  - <span class="str">honcho/conclusions</span>   <span class="cm"># or honcho/identity</span></code></pre>
+  <p>This makes Honcho-generated content navigable through Obsidian's native tag system &mdash; pin <code>#honcho</code> in the sidebar for one-click access to all identity material.</p>
+</section>
+
+<!-- =============== CODE BLOCKS =============== -->
+<section id="code-blocks">
+  <h2>Inline Code Blocks</h2>
+  <p>A <code>honcho</code> code block processor renders live Honcho data directly in reading view. No modals, no sidebar &mdash; identity information flows into the document itself.</p>
+
+  <h3>Commands</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Block content</th><th>Renders</th></tr></thead>
+      <tbody>
+        <tr><td><code>search: values and priorities</code></td><td>Semantic search results as a list of matching conclusions with dates</td></tr>
+        <tr><td><code>search: philosophy<br/>limit: 5</code></td><td>Same, capped at 5 results</td></tr>
+        <tr><td><code>card</code></td><td>The peer card as a bulleted list</td></tr>
+        <tr><td><code>representation</code></td><td>Full representation rendered as markdown</td></tr>
+        <tr><td><code>conclusions 10</code></td><td>10 most recent conclusions</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Usage</h3>
+  <pre><code><span class="cm">&#96;&#96;&#96;honcho</span>
+<span class="key">search</span>: what matters most
+<span class="key">limit</span>: <span class="num">5</span>
+<span class="cm">&#96;&#96;&#96;</span></code></pre>
+  <p>In reading view, the code fence is replaced by the live results. Switching to editing view shows the raw query. This means any note can embed a live window into identity &mdash; a daily note can show relevant conclusions, a project doc can show what Honcho understands about the domain, a review note can embed the peer card for reflection.</p>
+</section>
+
+<!-- =============== FILE STRUCTURE =============== -->
+<section id="file-structure">
+  <h2>File Structure</h2>
+  <pre><code>obsidian-honcho/
+&#x251C;&#x2500;&#x2500; manifest.json           <span class="cm"># Obsidian plugin manifest</span>
+&#x251C;&#x2500;&#x2500; package.json            <span class="cm"># bun, esbuild, obsidian types</span>
+&#x251C;&#x2500;&#x2500; tsconfig.json
+&#x251C;&#x2500;&#x2500; esbuild.config.mjs
+&#x251C;&#x2500;&#x2500; styles.css              <span class="cm"># Obsidian CSS vars only</span>
+&#x251C;&#x2500;&#x2500; src/
+&#x2502;   &#x251C;&#x2500;&#x2500; main.ts             <span class="cm"># Plugin lifecycle, commands, events</span>
+&#x2502;   &#x251C;&#x2500;&#x2500; settings.ts         <span class="cm"># Settings interface + tab</span>
+&#x2502;   &#x251C;&#x2500;&#x2500; honcho-client.ts    <span class="cm"># Full REST client (streaming, dreams, sessions)</span>
+&#x2502;   &#x251C;&#x2500;&#x2500; views/
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; sidebar-view.ts    <span class="cm"># Identity sidebar with conclusion explorer + contextual rep</span>
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; chat-modal.ts      <span class="cm"># Streaming dialectic chat (generic + contextual)</span>
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; session-manager.ts <span class="cm"># Session list, queue status, dream trigger</span>
+&#x2502;   &#x2502;   &#x2514;&#x2500;&#x2500; post-processor.ts  <span class="cm"># &#96;honcho&#96; code block renderer</span>
+&#x2502;   &#x251C;&#x2500;&#x2500; commands/
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; ingest.ts          <span class="cm"># Structural ingestion + graph traversal</span>
+&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; sync.ts            <span class="cm"># Pull identity + conclusions back, push peer card</span>
+&#x2502;   &#x2502;   &#x2514;&#x2500;&#x2500; search.ts          <span class="cm"># Semantic search modal</span>
+&#x2502;   &#x2514;&#x2500;&#x2500; utils/
+&#x2502;       &#x251C;&#x2500;&#x2500; chunker.ts         <span class="cm"># Heading/paragraph/sentence splitting</span>
+&#x2502;       &#x2514;&#x2500;&#x2500; frontmatter.ts     <span class="cm"># Honcho frontmatter read/write/filter</span>
+&#x2514;&#x2500;&#x2500; mcp/
+    &#x251C;&#x2500;&#x2500; package.json        <span class="cm"># MCP server dependencies</span>
+    &#x2514;&#x2500;&#x2500; server.ts           <span class="cm"># Standalone vault-aware MCP server</span></code></pre>
+</section>
+
+<!-- =============== CONFIGURATION =============== -->
+<section id="configuration">
+  <h2>Configuration</h2>
+
+  <h3>Plugin settings</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Setting</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>apiKey</code></td><td>(empty)</td><td>Honcho API key (masked in UI)</td></tr>
+        <tr><td><code>baseUrl</code></td><td><code>https://api.honcho.dev</code></td><td>API endpoint</td></tr>
+        <tr><td><code>apiVersion</code></td><td><code>v3</code></td><td>API version prefix</td></tr>
+        <tr><td><code>workspaceName</code></td><td>(vault name)</td><td>Honcho workspace ID</td></tr>
+        <tr><td><code>peerName</code></td><td><code>obsidian</code></td><td>Observer peer ID</td></tr>
+        <tr><td><code>observedPeerName</code></td><td>(same as observer)</td><td>Observed peer ID</td></tr>
+        <tr><td><code>linkDepth</code></td><td><code>1</code></td><td>Graph traversal depth (1-3)</td></tr>
+        <tr><td><code>autoSync</code></td><td><code>false</code></td><td>Auto-ingest on save</td></tr>
+        <tr><td><code>autoSyncTags</code></td><td><code>[]</code></td><td>Tag filter for auto-sync</td></tr>
+        <tr><td><code>autoSyncFolders</code></td><td><code>[]</code></td><td>Folder filter for auto-sync</td></tr>
+        <tr><td><code>trackFrontmatter</code></td><td><code>true</code></td><td>Write sync metadata to notes</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Commands</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Command</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>Open Honcho sidebar</td><td>Identity view: card, representation, conclusions, search</td></tr>
+        <tr><td>Ingest current note</td><td>Send active note with structural context</td></tr>
+        <tr><td>Ingest + linked notes</td><td>Transitive graph ingestion</td></tr>
+        <tr><td>Ingest folder</td><td>Batch ingest all .md in a folder</td></tr>
+        <tr><td>Ingest by tag</td><td>Batch ingest all notes with a tag</td></tr>
+        <tr><td>Chat with Honcho</td><td>Streaming dialectic conversation</td></tr>
+        <tr><td>Search Honcho memory</td><td>Semantic search over conclusions</td></tr>
+        <tr><td>Manage sessions</td><td>List/delete/re-ingest sessions, queue status</td></tr>
+        <tr><td>Generate identity note</td><td>Pull peer card + representation into vault</td></tr>
+        <tr><td>Pull conclusions</td><td>Pull recent conclusions into vault</td></tr>
+        <tr><td>Schedule dream</td><td>Manual memory consolidation trigger</td></tr>
+        <tr><td>Chat about this note</td><td>Contextual chat seeded with active note's title, tags, headings</td></tr>
+        <tr><td>Push note as peer card</td><td>Parse bullet points from a note and PUT as peer card &mdash; direct identity authorship</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =============== PROGRESS =============== -->
+<section id="progress">
+  <h2>Progress</h2>
+  <ul class="checklist">
+    <li class="done">Thin REST client with full Honcho v3 API coverage</li>
+    <li class="done">Streaming SSE support for dialectic chat</li>
+    <li class="done">Dream scheduling + queue status endpoints</li>
+    <li class="done">Session lifecycle management (list, delete, clone)</li>
+    <li class="done">Structural context extraction (tags, links, backlinks, headings, folders, dates)</li>
+    <li class="done">Graph-aware ingestion with configurable depth</li>
+    <li class="done">Session metadata with full vault structural signals</li>
+    <li class="done">Streaming chat modal with markdown rendering</li>
+    <li class="done">Session manager UI with queue progress</li>
+    <li class="done">MCP server with 8 vault-aware tools</li>
+    <li class="done">Auto-sync on save with tag/folder filters</li>
+    <li class="done">Bidirectional sync (vault &#x2194; Honcho)</li>
+    <li class="done">Architecture documentation</li>
+    <li class="done">Conclusion explorer with sort chips, text filter, pagination</li>
+    <li class="done">Contextual representation (active note awareness via search_query)</li>
+    <li class="done">Combined getPeerContext call (single API round-trip)</li>
+    <li class="done">Contextual chat modal (note title, tags, headings as context)</li>
+    <li class="done">Peer card authorship (push note as peer card via setPeerCard PUT)</li>
+    <li class="done">Nested Honcho tag mapping on sync-back (#honcho, #honcho/conclusions, #honcho/identity)</li>
+    <li class="done"><code>honcho</code> code block processor (search, card, representation, conclusions in reading view)</li>
+    <li class="done">Session summaries + session context client methods</li>
+    <li class="todo">EditorSuggest integration (inline autocomplete from Honcho)</li>
+    <li class="todo">Status bar sync indicator</li>
+    <li class="todo">Bases views integration (1.10.0+)</li>
+  </ul>
+</section>
+
+<!-- =============== PS: API PROPOSALS =============== -->
+<section id="api-proposals" style="margin-top: 6rem; padding-top: 3rem; border-top: 1px solid var(--border);">
+  <h2 style="color: var(--fg-muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.12em; border-bottom: none; padding-bottom: 0; margin-bottom: 0.5rem;">P.S.</h2>
+  <h2>Proposed Honcho API Changes</h2>
+  <p>The plugin works within the current API surface, but the vault-to-identity pipeline is <em>simulated</em> through conversational primitives. These proposals would make it native. Ordered by leverage.</p>
+
+  <h3>Tier 1 &mdash; Schema + endpoint changes</h3>
+
+  <h4>1. Expose conclusion metadata in response schema</h4>
+  <p>The internal <code>Document</code> model already carries <code>level</code>, <code>times_derived</code>, <code>source_ids</code>, and rich metadata (<code>confidence</code>, <code>pattern_type</code>, <code>premises</code>, <code>message_ids</code>). The <code>Conclusion</code> response schema exposes none of it. This is the single highest-leverage change &mdash; it transforms conclusions from opaque strings into a typed knowledge graph the plugin can render, filter, and navigate.</p>
+  <pre><code><span class="kw">class</span> <span class="fn">Conclusion</span>(BaseModel):
+    id: <span class="fn">str</span>
+    content: <span class="fn">str</span>
+    observer_id: <span class="fn">str</span>
+    observed_id: <span class="fn">str</span>
+    session_id: <span class="fn">str</span> | <span class="kw">None</span>
+    created_at: <span class="fn">datetime</span>
+    <span class="cm"># --- proposed additions ---</span>
+    level: <span class="fn">DocumentLevel</span>          <span class="cm"># "explicit" | "deductive" | "inductive" | "contradiction"</span>
+    times_derived: <span class="fn">int</span>             <span class="cm"># independent re-derivation count</span>
+    source_ids: <span class="fn">list</span>[<span class="fn">str</span>] | <span class="kw">None</span>  <span class="cm"># provenance chain to parent conclusions</span>
+    confidence: <span class="fn">str</span> | <span class="kw">None</span>        <span class="cm"># "high" | "medium" | "low" (inductive)</span>
+    pattern_type: <span class="fn">str</span> | <span class="kw">None</span>      <span class="cm"># "preference" | "behavior" | "personality" | "tendency"</span></code></pre>
+
+  <h4>2. Conclusion update endpoint</h4>
+  <p>The API supports create, list, query, and delete on conclusions. No update. This breaks the vault-as-identity-curator story &mdash; a user pulls conclusions, refines them in their vault, and has no path to push corrections back.</p>
+  <pre><code><span class="fn">PUT</span> /workspaces/{workspace_id}/conclusions/{conclusion_id}
+Body: { <span class="key">"content"</span>: <span class="str">"updated text"</span> }
+<span class="cm"># Server re-embeds the document and marks for vector sync</span></code></pre>
+
+  <h4>3. Temporal filters on conclusion queries</h4>
+  <p>Currently conclusions can only be filtered by semantic search or metadata. No first-class temporal query. The plugin needs "what's new since last sync" without pulling and diffing everything locally.</p>
+  <pre><code><span class="kw">class</span> <span class="fn">ConclusionQuery</span>(BaseModel):
+    query: <span class="fn">str</span>
+    top_k: <span class="fn">int</span> = <span class="num">10</span>
+    <span class="cm"># --- proposed additions ---</span>
+    created_after: <span class="fn">datetime</span> | <span class="kw">None</span> = <span class="kw">None</span>
+    created_before: <span class="fn">datetime</span> | <span class="kw">None</span> = <span class="kw">None</span>
+    session_id: <span class="fn">str</span> | <span class="kw">None</span> = <span class="kw">None</span>  <span class="cm"># scope to a specific source session</span></code></pre>
+
+  <h4>4. SSE event stream for pipeline events</h4>
+  <p>Webhooks require a publicly reachable HTTP endpoint. Obsidian is a desktop app. The plugin already consumes SSE for <code>peerChatStream</code>. A pipeline event stream would let it auto-refresh the sidebar when conclusions arrive, notify on dream completion, and update frontmatter when processing finishes.</p>
+  <pre><code><span class="fn">GET</span> /workspaces/{workspace_id}/events/stream
+Accept: <span class="str">text/event-stream</span>
+Query: ?since={timestamp}&amp;types=<span class="str">conclusion.created,dream.completed,peer_card.updated</span>
+
+<span class="cm"># Event types needed:</span>
+<span class="cm">#   conclusion.created       -- new conclusion derived</span>
+<span class="cm">#   conclusion.deleted       -- contradiction resolution</span>
+<span class="cm">#   dream.completed          -- dream cycle finished</span>
+<span class="cm">#   peer_card.updated        -- card modified by pipeline</span>
+<span class="cm">#   session.processing_done  -- all messages in a session processed</span></code></pre>
+  <p>Fallback alternative: a polling-friendly endpoint returning <code>{ events: [...], cursor: "..." }</code>.</p>
+
+  <h3>Tier 2 &mdash; New endpoints</h3>
+
+  <h4>5. Bulk ingestion</h4>
+  <p>Ingesting 100 notes currently means ~300 HTTP requests (<code>getOrCreateSession</code> + <code>updateSession</code> + <code>addMessages</code> per file). A bulk endpoint collapses this to 1.</p>
+  <pre><code><span class="fn">POST</span> /workspaces/{workspace_id}/bulk/ingest
+Body: {
+  <span class="key">"sessions"</span>: [
+    {
+      <span class="key">"id"</span>: <span class="str">"obsidian:file:path.md"</span>,
+      <span class="key">"peers"</span>: { ... },
+      <span class="key">"metadata"</span>: { ... },
+      <span class="key">"configuration"</span>: { ... },
+      <span class="key">"messages"</span>: [
+        { <span class="key">"peer_id"</span>: <span class="str">"..."</span>, <span class="key">"content"</span>: <span class="str">"..."</span>, <span class="key">"metadata"</span>: { ... } }
+      ]
+    }
+  ]
+}
+Returns: { <span class="key">"sessions_created"</span>: <span class="num">100</span>, <span class="key">"messages_created"</span>: <span class="num">847</span> }</code></pre>
+
+  <h4>6. Session replace semantics</h4>
+  <p>When a note is edited and re-ingested, the current behavior appends new messages alongside old ones. The deriver sees both versions and may derive duplicate or contradictory conclusions. A <code>replace</code> mode would mark old messages as superseded and only process the diff.</p>
+  <pre><code><span class="fn">POST</span> /workspaces/{workspace_id}/sessions/{session_id}/replace
+Body: {
+  <span class="key">"messages"</span>: [ ... ],
+  <span class="key">"preserve_conclusions"</span>: <span class="kw">true</span>  <span class="cm"># keep existing, don't re-derive from scratch</span>
+}
+<span class="cm"># 1. Soft-deletes old messages</span>
+<span class="cm"># 2. Inserts new messages</span>
+<span class="cm"># 3. Enqueues only the diff for observation</span></code></pre>
+
+  <h4>7. Conclusion provenance traversal</h4>
+  <p>The dream system creates deductive and inductive conclusions with provenance chains via <code>source_ids</code>. But the API doesn't expose any way to traverse the tree. When the plugin shows "tends to reschedule when stressed," the user should be able to click through to the evidence chain.</p>
+  <pre><code><span class="fn">GET</span> /workspaces/{workspace_id}/conclusions/{conclusion_id}/provenance
+Returns: {
+  <span class="key">"conclusion"</span>: Conclusion,
+  <span class="key">"sources"</span>: [Conclusion, ...],        <span class="cm"># direct parents</span>
+  <span class="key">"derived_from"</span>: [Conclusion, ...],   <span class="cm"># transitive ancestors (explicit observations)</span>
+  <span class="key">"derived_into"</span>: [Conclusion, ...]    <span class="cm"># children citing this conclusion</span>
+}</code></pre>
+
+  <h3>Tier 3 &mdash; Architectural</h3>
+
+  <h4>8. Document Ingestion API</h4>
+  <p>The fundamental tension: Honcho's API models conversations between peers. The vault-to-identity pipeline shoehorns notes into this model by creating sessions-per-file with structural context serialized into text preambles. A document ingestion API would make vault-shaped data a first-class concept.</p>
+  <pre><code><span class="fn">POST</span> /workspaces/{workspace_id}/peers/{peer_id}/documents
+Body: {
+  <span class="key">"documents"</span>: [
+    {
+      <span class="key">"id"</span>: <span class="str">"obsidian:file:path/to/note.md"</span>,
+      <span class="key">"content"</span>: <span class="str">"markdown content..."</span>,
+      <span class="key">"metadata"</span>: {
+        <span class="key">"title"</span>: <span class="str">"Note Title"</span>,
+        <span class="key">"tags"</span>: [<span class="str">"#philosophy"</span>, <span class="str">"#identity"</span>],
+        <span class="key">"links_to"</span>: [<span class="str">"obsidian:file:other.md"</span>],
+        <span class="key">"linked_from"</span>: [<span class="str">"obsidian:file:parent.md"</span>],
+        <span class="key">"folder"</span>: <span class="str">"daily/"</span>,
+        <span class="key">"created_at"</span>: <span class="str">"2026-01-15T00:00:00Z"</span>,
+        <span class="key">"modified_at"</span>: <span class="str">"2026-02-09T12:00:00Z"</span>
+      },
+      <span class="key">"mode"</span>: <span class="str">"replace"</span>  <span class="cm"># or "append"</span>
+    }
+  ]
+}</code></pre>
+  <p>The server handles session management internally, understands <code>replace</code> natively, stores graph relationships (<code>links_to</code>, <code>linked_from</code>) as first-class metadata, and optimizes the deriver for document-shaped content.</p>
+
+  <h4>9. Bidirectional sync protocol</h4>
+  <p>Replace ad-hoc "pull conclusions" and "generate identity note" commands with a proper sync loop.</p>
+  <pre><code><span class="fn">GET</span> /workspaces/{workspace_id}/sync/status?since={timestamp}
+Returns: {
+  <span class="key">"new_conclusions"</span>: [ ... ],
+  <span class="key">"updated_peer_card"</span>: { ... } | <span class="kw">null</span>,
+  <span class="key">"sessions_processed"</span>: [ ... ],
+  <span class="key">"dreams_completed"</span>: [ ... ]
+}
+
+<span class="fn">POST</span> /workspaces/{workspace_id}/sync/acknowledge
+Body: { <span class="key">"cursor"</span>: <span class="str">"2026-02-09T12:05:00Z"</span> }</code></pre>
+
+  <h4>10. Source-type-aware pipeline configuration</h4>
+  <p>The deriver and dreamer treat all messages identically. But vault notes differ fundamentally from chat messages: they're revised, structured, longer, and represent the user's own thinking rather than a conversation. A <code>source_type</code> on session configuration would let the pipeline adapt.</p>
+  <pre><code><span class="kw">class</span> <span class="fn">SessionConfiguration</span>(BaseModel):
+    ...
+    source_type: Literal[<span class="str">"conversation"</span>, <span class="str">"document"</span>, <span class="str">"journal"</span>] | <span class="kw">None</span> = <span class="kw">None</span>
+    ingestion_mode: Literal[<span class="str">"append"</span>, <span class="str">"replace"</span>] | <span class="kw">None</span> = <span class="kw">None</span></code></pre>
+
+  <h3>Tier 4 &mdash; Additional</h3>
+
+  <h4>11. Conclusion merge</h4>
+  <pre><code><span class="fn">POST</span> /workspaces/{workspace_id}/conclusions/merge
+Body: {
+  <span class="key">"conclusion_ids"</span>: [<span class="str">"id1"</span>, <span class="str">"id2"</span>, <span class="str">"id3"</span>],
+  <span class="key">"merged_content"</span>: <span class="str">"optional override"</span>  <span class="cm"># omit to keep highest-derived</span>
+}
+Returns: Conclusion <span class="cm"># the surviving merged conclusion</span></code></pre>
+
+  <h4>12. Workspace conclusion statistics</h4>
+  <pre><code><span class="fn">GET</span> /workspaces/{workspace_id}/conclusions/stats
+Returns: {
+  <span class="key">"total"</span>: <span class="num">142</span>,
+  <span class="key">"by_level"</span>: { <span class="str">"explicit"</span>: <span class="num">98</span>, <span class="str">"deductive"</span>: <span class="num">32</span>, <span class="str">"inductive"</span>: <span class="num">10</span>, <span class="str">"contradiction"</span>: <span class="num">2</span> },
+  <span class="key">"most_derived"</span>: [ { <span class="key">"content"</span>: <span class="str">"..."</span>, <span class="key">"times_derived"</span>: <span class="num">12</span> } ],
+  <span class="key">"recent_7d"</span>: <span class="num">23</span>,
+  <span class="key">"recent_30d"</span>: <span class="num">67</span>
+}</code></pre>
+
+  <h4>13. Conclusion annotations / user feedback</h4>
+  <pre><code><span class="fn">POST</span> /workspaces/{workspace_id}/conclusions/{id}/annotate
+Body: {
+  <span class="key">"action"</span>: <span class="str">"confirm"</span> | <span class="str">"reject"</span> | <span class="str">"edit"</span>,
+  <span class="key">"content"</span>: <span class="str">"edited text if action is edit"</span>
+}
+<span class="cm"># confirm  -> boost times_derived</span>
+<span class="cm"># reject   -> soft-delete, use as negative signal</span>
+<span class="cm"># edit     -> update in place, re-embed</span></code></pre>
+
+  <h3>Already available, currently unused by plugin</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Capability</th><th>Endpoint</th><th>What it enables</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Peer context (combined)</td>
+          <td><code>GET /peers/{id}/context</code></td>
+          <td>Single call replaces separate card + representation fetches in sidebar</td>
+        </tr>
+        <tr>
+          <td>Focused representation</td>
+          <td><code>search_query</code> param on representation</td>
+          <td>Show identity relevant to <em>current note</em> rather than everything</td>
+        </tr>
+        <tr>
+          <td>Peer card write</td>
+          <td><code>PUT /peers/{id}/card</code></td>
+          <td>Curate the peer card from a vault note &mdash; direct identity authorship</td>
+        </tr>
+        <tr>
+          <td>Session summaries</td>
+          <td><code>GET /sessions/{id}/summaries</code></td>
+          <td>Display "what Honcho understood from this note" per ingested file</td>
+        </tr>
+        <tr>
+          <td>Clone with cutoff</td>
+          <td><code>POST /sessions/{id}/clone?message_id=...</code></td>
+          <td>Incremental re-ingestion: clone to last valid point, append diff</td>
+        </tr>
+        <tr>
+          <td>Session context</td>
+          <td><code>GET /sessions/{id}/context</code></td>
+          <td>Messages + summary + representation + card in one call with token budgeting</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+</div><!-- .container -->
+
+<!-- SCRIPTS -->
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({
+    startOnLoad: true,
+    securityLevel: 'loose',
+    fontFamily: 'Departure Mono, Noto Emoji, monospace',
+    fontSize: 16,
+    flowchart: {
+      padding: 20,
+      nodeSpacing: 50,
+      rankSpacing: 60,
+      useMaxWidth: true,
+    },
+  });
+</script>
+
+<script>
+  window.addEventListener('scroll', () => {
+    const bar = document.getElementById('progress');
+    const max = document.documentElement.scrollHeight - window.innerHeight;
+    const pct = max > 0 ? (window.scrollY / max) * 100 : 0;
+    bar.style.width = pct + '%';
+  });
+</script>
+
+</body>
+</html>
