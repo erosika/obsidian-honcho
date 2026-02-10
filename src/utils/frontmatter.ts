@@ -2,7 +2,8 @@ import { type App, type TFile } from "obsidian";
 
 export interface HonchoFrontmatter {
 	honcho_synced?: string;
-	honcho_conclusion_ids?: string[];
+	honcho_session_id?: string;
+	honcho_message_count?: number;
 }
 
 /**
@@ -15,7 +16,8 @@ export function readHonchoFrontmatter(app: App, file: TFile): HonchoFrontmatter 
 
 	return {
 		honcho_synced: fm.honcho_synced as string | undefined,
-		honcho_conclusion_ids: fm.honcho_conclusion_ids as string[] | undefined,
+		honcho_session_id: fm.honcho_session_id as string | undefined,
+		honcho_message_count: fm.honcho_message_count as number | undefined,
 	};
 }
 
@@ -31,8 +33,11 @@ export async function writeHonchoFrontmatter(
 		if (data.honcho_synced !== undefined) {
 			fm.honcho_synced = data.honcho_synced;
 		}
-		if (data.honcho_conclusion_ids !== undefined) {
-			fm.honcho_conclusion_ids = data.honcho_conclusion_ids;
+		if (data.honcho_session_id !== undefined) {
+			fm.honcho_session_id = data.honcho_session_id;
+		}
+		if (data.honcho_message_count !== undefined) {
+			fm.honcho_message_count = data.honcho_message_count;
 		}
 	});
 }

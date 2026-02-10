@@ -7,6 +7,7 @@ export interface HonchoPluginSettings {
 	apiVersion: string;
 	workspaceName: string;
 	peerName: string;
+	observedPeerName: string;
 	autoSync: boolean;
 	autoSyncTags: string[];
 	autoSyncFolders: string[];
@@ -18,7 +19,8 @@ export const DEFAULT_SETTINGS: HonchoPluginSettings = {
 	baseUrl: "https://api.honcho.dev",
 	apiVersion: "v3",
 	workspaceName: "",
-	peerName: "",
+	peerName: "obsidian",
+	observedPeerName: "",
 	autoSync: false,
 	autoSyncTags: [],
 	autoSyncFolders: [],
@@ -114,14 +116,27 @@ export class HonchoSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Peer name")
-			.setDesc("Your peer ID in Honcho. Defaults to vault name if empty.")
+			.setName("Observer peer")
+			.setDesc("The peer that represents this vault. This is who sends messages when you ingest notes.")
 			.addText((text) =>
 				text
-					.setPlaceholder(this.app.vault.getName())
+					.setPlaceholder("obsidian")
 					.setValue(this.plugin.settings.peerName)
 					.onChange(async (value) => {
 						this.plugin.settings.peerName = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Observed peer")
+			.setDesc("The peer being observed. Ingested content builds this peer's representation. Leave empty to observe self (observer = observed).")
+			.addText((text) =>
+				text
+					.setPlaceholder("Same as observer")
+					.setValue(this.plugin.settings.observedPeerName)
+					.onChange(async (value) => {
+						this.plugin.settings.observedPeerName = value;
 						await this.plugin.saveSettings();
 					})
 			);

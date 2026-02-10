@@ -15,6 +15,7 @@ export default class HonchoPlugin extends Plugin {
 	private initialized = false;
 	private workspaceId = "";
 	private peerId = "";
+	private observedPeerId = "";
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -179,28 +180,42 @@ export default class HonchoPlugin extends Plugin {
 	}
 
 	getPeerId(): string {
-		return this.settings.peerName || this.app.vault.getName();
+		return this.settings.peerName || "obsidian";
+	}
+
+	getObservedPeerId(): string {
+		return this.settings.observedPeerName || this.getPeerId();
 	}
 
 	/**
 	 * Ensure workspace + peer exist in Honcho. Called lazily before operations.
 	 */
-	private async ensureInitialized(): Promise<{ client: HonchoClient; workspaceId: string; peerId: string }> {
+	private async ensureInitialized(): Promise<{
+		client: HonchoClient;
+		workspaceId: string;
+		peerId: string;
+		observedPeerId: string;
+	}> {
 		const client = this.getClient();
 		if (!client) throw new Error("Configure your API key in Honcho settings");
 
 		const workspaceId = this.getWorkspaceId();
 		const peerId = this.getPeerId();
+		const observedPeerId = this.getObservedPeerId();
 
 		if (!this.initialized) {
 			await client.getOrCreateWorkspace(workspaceId);
-			await client.getOrCreatePeer(workspaceId, peerId, { observe_me: true });
+			await client.getOrCreatePeer(workspaceId, peerId, { observe_me: peerId === observedPeerId });
+			if (observedPeerId !== peerId) {
+				await client.getOrCreatePeer(workspaceId, observedPeerId, { observe_me: true });
+			}
 			this.workspaceId = workspaceId;
 			this.peerId = peerId;
+			this.observedPeerId = observedPeerId;
 			this.initialized = true;
 		}
 
-		return { client, workspaceId: this.workspaceId, peerId: this.peerId };
+		return { client, workspaceId: this.workspaceId, peerId: this.peerId, observedPeerId: this.observedPeerId };
 	}
 
 	// -----------------------------------------------------------------------
@@ -227,13 +242,13 @@ export default class HonchoPlugin extends Plugin {
 
 	private async runIngest(file: TFile, silent = false): Promise<void> {
 		try {
-			const { client, workspaceId, peerId } = await this.ensureInitialized();
+			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
 			const ctx = createIngestContext(
-				this.app, client, workspaceId, peerId, this.settings.trackFrontmatter
+				this.app, client, workspaceId, peerId, observedPeerId, this.settings.trackFrontmatter
 			);
 			const created = await ingestNote(ctx, file);
 			if (!silent) {
-				new Notice(`Ingested ${file.basename}: ${created.length} conclusion${created.length !== 1 ? "s" : ""}`);
+				new Notice(`Ingested ${file.basename}: ${created.length} message${created.length !== 1 ? "s" : ""}`);
 			}
 		} catch (err) {
 			new Notice(`Ingest failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -242,12 +257,12 @@ export default class HonchoPlugin extends Plugin {
 
 	private async runIngestFolder(folder: TFolder): Promise<void> {
 		try {
-			const { client, workspaceId, peerId } = await this.ensureInitialized();
+			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
 			const ctx = createIngestContext(
-				this.app, client, workspaceId, peerId, this.settings.trackFrontmatter
+				this.app, client, workspaceId, peerId, observedPeerId, this.settings.trackFrontmatter
 			);
 			const total = await ingestFolder(ctx, folder);
-			new Notice(`Ingested ${folder.name}: ${total} conclusion${total !== 1 ? "s" : ""}`);
+			new Notice(`Ingested ${folder.name}: ${total} message${total !== 1 ? "s" : ""}`);
 		} catch (err) {
 			new Notice(`Ingest failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
@@ -335,12 +350,12 @@ export default class HonchoPlugin extends Plugin {
 
 		new TagPicker(this.app, tags, async (tag) => {
 			try {
-				const { client, workspaceId, peerId } = await this.ensureInitialized();
+				const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
 				const ctx = createIngestContext(
-					this.app, client, workspaceId, peerId, this.settings.trackFrontmatter
+					this.app, client, workspaceId, peerId, observedPeerId, this.settings.trackFrontmatter
 				);
 				const total = await ingestByTag(ctx, tag);
-				new Notice(`Ingested ${tag}: ${total} conclusion${total !== 1 ? "s" : ""}`);
+				new Notice(`Ingested ${tag}: ${total} message${total !== 1 ? "s" : ""}`);
 			} catch (err) {
 				new Notice(`Ingest failed: ${err instanceof Error ? err.message : String(err)}`);
 			}
@@ -353,8 +368,8 @@ export default class HonchoPlugin extends Plugin {
 
 	private async openSearch(): Promise<void> {
 		try {
-			const { client, workspaceId, peerId } = await this.ensureInitialized();
-			new HonchoSearchModal(this.app, client, workspaceId, peerId).open();
+			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
+			new HonchoSearchModal(this.app, client, workspaceId, observedPeerId).open();
 		} catch (err) {
 			new Notice(`${err instanceof Error ? err.message : String(err)}`);
 		}
@@ -366,8 +381,8 @@ export default class HonchoPlugin extends Plugin {
 
 	private async openChat(): Promise<void> {
 		try {
-			const { client, workspaceId, peerId } = await this.ensureInitialized();
-			new HonchoChatModal(this.app, client, workspaceId, peerId).open();
+			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
+			new HonchoChatModal(this.app, client, workspaceId, observedPeerId).open();
 		} catch (err) {
 			new Notice(`${err instanceof Error ? err.message : String(err)}`);
 		}
@@ -379,8 +394,8 @@ export default class HonchoPlugin extends Plugin {
 
 	private async runGenerateIdentity(): Promise<void> {
 		try {
-			const { client, workspaceId, peerId } = await this.ensureInitialized();
-			const ctx = createSyncContext(this.app, client, workspaceId, peerId);
+			const { client, workspaceId, observedPeerId } = await this.ensureInitialized();
+			const ctx = createSyncContext(this.app, client, workspaceId, observedPeerId);
 			const file = await generateIdentityNote(ctx);
 			this.app.workspace.getLeaf().openFile(file);
 		} catch (err) {
@@ -390,8 +405,8 @@ export default class HonchoPlugin extends Plugin {
 
 	private async runPullConclusions(): Promise<void> {
 		try {
-			const { client, workspaceId, peerId } = await this.ensureInitialized();
-			const ctx = createSyncContext(this.app, client, workspaceId, peerId);
+			const { client, workspaceId, observedPeerId } = await this.ensureInitialized();
+			const ctx = createSyncContext(this.app, client, workspaceId, observedPeerId);
 			const file = await pullConclusions(ctx);
 			this.app.workspace.getLeaf().openFile(file);
 		} catch (err) {

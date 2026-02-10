@@ -261,6 +261,17 @@ export class HonchoClient {
 		});
 	}
 
+	async updateSession(
+		workspaceId: string,
+		sessionId: string,
+		params: { metadata?: Record<string, unknown>; configuration?: Record<string, unknown> }
+	): Promise<SessionResponse> {
+		return this.put<SessionResponse>(
+			`/workspaces/${workspaceId}/sessions/${sessionId}`,
+			params
+		);
+	}
+
 	// -----------------------------------------------------------------------
 	// Messages
 	// -----------------------------------------------------------------------

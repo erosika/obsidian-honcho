@@ -1,23 +1,41 @@
-import { type App, Notice, TFile, TFolder, type FuzzyMatch } from "obsidian";
-import type { HonchoClient, ConclusionResponse } from "../honcho-client";
+import { type App, Notice, TFile, TFolder } from "obsidian";
+import type { HonchoClient, MessageResponse } from "../honcho-client";
 import { chunkMarkdown } from "../utils/chunker";
 import { writeHonchoFrontmatter } from "../utils/frontmatter";
 
-interface IngestContext {
+export interface IngestContext {
 	app: App;
 	client: HonchoClient;
 	workspaceId: string;
-	peerId: string;
+	observerPeerId: string;
+	observedPeerId: string;
 	trackFrontmatter: boolean;
 }
 
 /**
- * Ingest a single note: chunk its content and create conclusions.
+ * Build a deterministic session ID from the ingestion source.
+ */
+function sessionIdForFile(file: TFile): string {
+	return `obsidian:file:${file.path}`;
+}
+
+function sessionIdForFolder(folder: TFolder): string {
+	return `obsidian:folder:${folder.path}`;
+}
+
+function sessionIdForTag(tag: string): string {
+	const normalized = tag.startsWith("#") ? tag.slice(1) : tag;
+	return `obsidian:tag:${normalized}`;
+}
+
+/**
+ * Ingest a single note: create a session, chunk content into messages.
+ * Honcho's observation pipeline processes the messages and derives conclusions.
  */
 export async function ingestNote(
 	ctx: IngestContext,
 	file: TFile
-): Promise<ConclusionResponse[]> {
+): Promise<MessageResponse[]> {
 	const content = await ctx.app.vault.cachedRead(file);
 	const chunks = chunkMarkdown(content);
 
@@ -26,19 +44,57 @@ export async function ingestNote(
 		return [];
 	}
 
-	const conclusions = chunks.map((chunk) => ({
-		content: `[${file.basename}] ${chunk}`,
-		observer_id: ctx.peerId,
-		observed_id: ctx.peerId,
-		session_id: null,
+	const sessionId = sessionIdForFile(file);
+
+	// Get-or-create session with metadata about the source
+	const cache = ctx.app.metadataCache.getFileCache(file);
+	const fileTags = (cache?.tags ?? []).map((t) => t.tag);
+	const fmTags = ((cache?.frontmatter?.tags as string[]) ?? []).map(
+		(t) => (t.startsWith("#") ? t : "#" + t)
+	);
+
+	const session = await ctx.client.getOrCreateSession(
+		ctx.workspaceId,
+		sessionId,
+		{
+			[ctx.observerPeerId]: { observe_me: false, observe_others: true },
+			[ctx.observedPeerId]: { observe_me: true, observe_others: false },
+		}
+	);
+
+	// Update session metadata with source info
+	await ctx.client.updateSession(ctx.workspaceId, session.id, {
+		metadata: {
+			source: "obsidian",
+			source_type: "file",
+			file_path: file.path,
+			file_name: file.basename,
+			tags: [...new Set([...fileTags, ...fmTags])],
+			ingested_at: new Date().toISOString(),
+		},
+	});
+
+	// Create messages from chunks
+	const messages = chunks.map((chunk) => ({
+		peer_id: ctx.observerPeerId,
+		content: chunk,
+		metadata: {
+			source_file: file.path,
+			source_name: file.basename,
+		},
 	}));
 
-	const created = await ctx.client.createConclusions(ctx.workspaceId, conclusions);
+	const created = await ctx.client.addMessages(
+		ctx.workspaceId,
+		session.id,
+		messages
+	);
 
 	if (ctx.trackFrontmatter) {
 		await writeHonchoFrontmatter(ctx.app, file, {
 			honcho_synced: new Date().toISOString(),
-			honcho_conclusion_ids: created.map((c) => c.id),
+			honcho_session_id: session.id,
+			honcho_message_count: created.length,
 		});
 	}
 
@@ -47,6 +103,7 @@ export async function ingestNote(
 
 /**
  * Ingest all markdown files in a folder.
+ * Creates one session per file, all sharing folder metadata.
  */
 export async function ingestFolder(
 	ctx: IngestContext,
@@ -122,8 +179,9 @@ export function createIngestContext(
 	app: App,
 	client: HonchoClient,
 	workspaceId: string,
-	peerId: string,
+	observerPeerId: string,
+	observedPeerId: string,
 	trackFrontmatter: boolean
 ): IngestContext {
-	return { app, client, workspaceId, peerId, trackFrontmatter };
+	return { app, client, workspaceId, observerPeerId, observedPeerId, trackFrontmatter };
 }
