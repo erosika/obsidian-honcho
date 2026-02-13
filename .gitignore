@@ -2,3 +2,5 @@ node_modules/
 main.js
 *.js.map
 bun.lockb
+bun.lock
+mcp/dist/
