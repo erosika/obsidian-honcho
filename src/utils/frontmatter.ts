@@ -48,6 +48,16 @@ export async function writeHonchoFrontmatter(
 }
 
 /**
+ * Safely coerce frontmatter tags to a string array.
+ * Obsidian allows `tags: foo` (string) or `tags: [foo, bar]` (array).
+ */
+export function normalizeFrontmatterTags(raw: unknown): string[] {
+	if (Array.isArray(raw)) return raw.map(String);
+	if (typeof raw === "string") return [raw];
+	return [];
+}
+
+/**
  * Check whether a file's tags or folder match the auto-sync filters.
  */
 export function matchesSyncFilters(
@@ -71,7 +81,7 @@ export function matchesSyncFilters(
 	if (tags.length > 0) {
 		const cache = app.metadataCache.getFileCache(file);
 		const fileTags = (cache?.tags ?? []).map((t) => t.tag.toLowerCase());
-		const fmTags = ((cache?.frontmatter?.tags as string[]) ?? []).map(
+		const fmTags = normalizeFrontmatterTags(cache?.frontmatter?.tags).map(
 			(t) => (t.startsWith("#") ? t : "#" + t).toLowerCase()
 		);
 		const allTags = [...fileTags, ...fmTags];

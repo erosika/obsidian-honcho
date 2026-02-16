@@ -1,8 +1,8 @@
 import { type App, Notice, TFile, TFolder } from "obsidian";
 import type { HonchoClient, MessageResponse, SessionConfiguration } from "../honcho-client";
 import { chunkMarkdown } from "../utils/chunker";
-import { writeHonchoFrontmatter } from "../utils/frontmatter";
-import { checkSyncStatusAsync, partitionByStatus, stripFrontmatter, computeContentHash } from "../utils/sync-status";
+import { writeHonchoFrontmatter, normalizeFrontmatterTags } from "../utils/frontmatter";
+import { checkSyncStatus, partitionByStatus, stripFrontmatter, computeContentHash } from "../utils/sync-status";
 
 export interface IngestContext {
 	app: App;
@@ -49,7 +49,7 @@ function extractStructuralContext(app: App, file: TFile): StructuralContext {
 
 	// Tags from both inline and frontmatter
 	const inlineTags = (cache?.tags ?? []).map((t) => t.tag);
-	const fmTags = ((cache?.frontmatter?.tags as string[]) ?? []).map(
+	const fmTags = normalizeFrontmatterTags(cache?.frontmatter?.tags).map(
 		(t) => (t.startsWith("#") ? t : "#" + t)
 	);
 	const tags = [...new Set([...inlineTags, ...fmTags])];
@@ -62,12 +62,12 @@ function extractStructuralContext(app: App, file: TFile): StructuralContext {
 	// Outgoing links from this file
 	const outgoingLinks = (cache?.links ?? []).map((l) => l.link);
 
-	// Backlinks: invert resolvedLinks
+	// Backlinks: scan resolvedLinks for references to this file
 	const backlinks: string[] = [];
 	const resolved = app.metadataCache.resolvedLinks;
 	if (resolved) {
-		for (const [sourcePath, targets] of Object.entries(resolved)) {
-			if (file.path in (targets as Record<string, number>)) {
+		for (const sourcePath in resolved) {
+			if (resolved[sourcePath]?.[file.path]) {
 				backlinks.push(sourcePath.replace(/\.md$/, ""));
 			}
 		}
@@ -143,7 +143,7 @@ export async function ingestNote(
 ): Promise<IngestResult> {
 	// Gate: check if content has actually changed
 	if (!opts?.force) {
-		const status = await checkSyncStatusAsync(ctx.app, file);
+		const status = await checkSyncStatus(ctx.app, file);
 		if (!status.needsSync) {
 			return { messages: [], skipped: true, reason: "unchanged" };
 		}
@@ -246,6 +246,8 @@ export async function ingestNote(
 	return { messages: created, skipped: false };
 }
 
+export type ProgressCallback = (completed: number, total: number) => void;
+
 export interface BatchIngestResult {
 	totalMessages: number;
 	counts: { new: number; modified: number; unchanged: number };
@@ -257,7 +259,8 @@ export interface BatchIngestResult {
  */
 export async function ingestFolder(
 	ctx: IngestContext,
-	folder: TFolder
+	folder: TFolder,
+	onProgress?: ProgressCallback
 ): Promise<BatchIngestResult> {
 	const files = folder.children.filter(
 		(f): f is TFile => f instanceof TFile && f.extension === "md"
@@ -276,13 +279,17 @@ export async function ingestFolder(
 	}
 
 	let totalMessages = 0;
+	let completed = 0;
 	const batchSize = 5;
 	const toIngest = partition.needsSync.map((e) => e.file);
+	const total = toIngest.length;
 
 	for (let i = 0; i < toIngest.length; i += batchSize) {
 		const batch = toIngest.slice(i, i + batchSize);
 		const results = await Promise.all(batch.map((f) => ingestNote(ctx, f, { force: true })));
 		totalMessages += results.reduce((sum, r) => sum + r.messages.length, 0);
+		completed += batch.length;
+		onProgress?.(completed, total);
 	}
 
 	// Schedule a dream after bulk ingestion
@@ -307,7 +314,8 @@ export async function ingestFolder(
  */
 export async function ingestByTag(
 	ctx: IngestContext,
-	tag: string
+	tag: string,
+	onProgress?: ProgressCallback
 ): Promise<BatchIngestResult> {
 	const normalizedTag = (tag.startsWith("#") ? tag : "#" + tag).toLowerCase();
 	const files: TFile[] = [];
@@ -317,7 +325,7 @@ export async function ingestByTag(
 		if (!cache) continue;
 
 		const inlineTags = (cache.tags ?? []).map((t) => t.tag.toLowerCase());
-		const fmTags = ((cache.frontmatter?.tags as string[]) ?? []).map(
+		const fmTags = normalizeFrontmatterTags(cache.frontmatter?.tags).map(
 			(t) => (t.startsWith("#") ? t : "#" + t).toLowerCase()
 		);
 		const allTags = [...inlineTags, ...fmTags];
@@ -340,13 +348,17 @@ export async function ingestByTag(
 	}
 
 	let totalMessages = 0;
+	let completed = 0;
 	const batchSize = 5;
 	const toIngest = partition.needsSync.map((e) => e.file);
+	const total = toIngest.length;
 
 	for (let i = 0; i < toIngest.length; i += batchSize) {
 		const batch = toIngest.slice(i, i + batchSize);
 		const results = await Promise.all(batch.map((f) => ingestNote(ctx, f, { force: true })));
 		totalMessages += results.reduce((sum, r) => sum + r.messages.length, 0);
+		completed += batch.length;
+		onProgress?.(completed, total);
 	}
 
 	// Schedule a dream after bulk ingestion
