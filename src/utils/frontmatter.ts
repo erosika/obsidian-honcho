@@ -4,6 +4,7 @@ export interface HonchoFrontmatter {
 	honcho_synced?: string;
 	honcho_session_id?: string;
 	honcho_message_count?: number;
+	honcho_content_hash?: string;
 }
 
 /**
@@ -18,6 +19,7 @@ export function readHonchoFrontmatter(app: App, file: TFile): HonchoFrontmatter 
 		honcho_synced: fm.honcho_synced as string | undefined,
 		honcho_session_id: fm.honcho_session_id as string | undefined,
 		honcho_message_count: fm.honcho_message_count as number | undefined,
+		honcho_content_hash: fm.honcho_content_hash as string | undefined,
 	};
 }
 
@@ -38,6 +40,9 @@ export async function writeHonchoFrontmatter(
 		}
 		if (data.honcho_message_count !== undefined) {
 			fm.honcho_message_count = data.honcho_message_count;
+		}
+		if (data.honcho_content_hash !== undefined) {
+			fm.honcho_content_hash = data.honcho_content_hash;
 		}
 	});
 }

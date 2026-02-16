@@ -1,6 +1,7 @@
 import { ItemView, MarkdownRenderer, TFile, type EventRef, type WorkspaceLeaf } from "obsidian";
 import type HonchoPlugin from "../main";
 import type { ConclusionResponse } from "../honcho-client";
+import { findStaleNotes } from "../utils/sync-status";
 
 export const HONCHO_VIEW_TYPE = "honcho-sidebar";
 
@@ -187,6 +188,9 @@ export class HonchoSidebarView extends ItemView {
 			this.allConclusions = conclusionsResp.items;
 			this.renderConclusionExplorer(body);
 
+			// Sync status section
+			this.renderSyncStatus(body);
+
 			if (
 				(!contextResp.peer_card || contextResp.peer_card.length === 0) &&
 				!contextResp.representation &&
@@ -363,6 +367,43 @@ export class HonchoSidebarView extends ItemView {
 				this.refreshExplorerList(el.parentElement!);
 			}
 		});
+	}
+
+	// ---------------------------------------------------------------------------
+	// Sync status
+	// ---------------------------------------------------------------------------
+
+	private async renderSyncStatus(parent: HTMLElement): Promise<void> {
+		const section = parent.createDiv({ cls: "honcho-section honcho-sync-status-section" });
+		section.createEl("h4", { text: "Sync Status" });
+		const statusEl = section.createDiv({ cls: "honcho-sync-status-body" });
+		statusEl.createSpan({ text: "Checking...", cls: "honcho-loading" });
+
+		try {
+			const stale = await findStaleNotes(this.app);
+
+			statusEl.empty();
+
+			if (stale.length === 0) {
+				statusEl.createSpan({ text: "All notes up to date", cls: "honcho-text-muted" });
+			} else {
+				statusEl.createSpan({
+					text: `${stale.length} stale note${stale.length !== 1 ? "s" : ""}`,
+					cls: "honcho-text-accent",
+				});
+
+				const btn = statusEl.createEl("button", {
+					text: "View",
+					cls: "honcho-btn-small",
+				});
+				btn.addEventListener("click", () => {
+					this.app.commands.executeCommandById("honcho:show-stale-notes");
+				});
+			}
+		} catch {
+			statusEl.empty();
+			statusEl.createSpan({ text: "Could not check sync status", cls: "honcho-text-muted" });
+		}
 	}
 
 	// ---------------------------------------------------------------------------

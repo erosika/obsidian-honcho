@@ -4,17 +4,19 @@ import { DEFAULT_SETTINGS, HonchoSettingTab, type HonchoPluginSettings } from ".
 import { HONCHO_VIEW_TYPE, HonchoSidebarView } from "./views/sidebar-view";
 import { HonchoChatModal } from "./views/chat-modal";
 import { SessionManagerModal } from "./views/session-manager";
+import { StaleNotesModal } from "./views/stale-notes-modal";
 import { HonchoSearchModal } from "./commands/search";
 import { createIngestContext, ingestNote, ingestFolder, ingestByTag, ingestLinked } from "./commands/ingest";
 import { createSyncContext, generateIdentityNote, pullConclusions, pushPeerCardFromNote } from "./commands/sync";
 import type { NoteContext } from "./views/chat-modal";
 import { matchesSyncFilters } from "./utils/frontmatter";
 import { registerHonchoCodeBlock } from "./views/post-processor";
+import { SyncQueue } from "./utils/sync-queue";
 
 export default class HonchoPlugin extends Plugin {
 	settings: HonchoPluginSettings = DEFAULT_SETTINGS;
 	private client: HonchoClient | null = null;
-	private saveDebounceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+	private syncQueue: SyncQueue | null = null;
 	private initialized = false;
 	private workspaceId = "";
 	private peerId = "";
@@ -130,6 +132,12 @@ export default class HonchoPlugin extends Plugin {
 			},
 		});
 
+		this.addCommand({
+			id: "show-stale-notes",
+			name: "Show stale notes",
+			callback: () => this.openStaleNotes(),
+		});
+
 		// -- Settings tab --
 		this.addSettingTab(new HonchoSettingTab(this.app, this));
 
@@ -175,6 +183,8 @@ export default class HonchoPlugin extends Plugin {
 		);
 
 		// -- Auto-sync on save --
+		this.syncQueue = new SyncQueue(this.app, (file) => this.runIngest(file, true));
+
 		this.registerEvent(
 			this.app.vault.on("modify", (file) => {
 				if (
@@ -193,24 +203,13 @@ export default class HonchoPlugin extends Plugin {
 					return;
 				}
 
-				// Debounce 5s per file
-				const existing = this.saveDebounceTimers.get(file.path);
-				if (existing) clearTimeout(existing);
-
-				const timer = setTimeout(() => {
-					this.saveDebounceTimers.delete(file.path);
-					this.runIngest(file, true);
-				}, 5000);
-				this.saveDebounceTimers.set(file.path, timer);
+				this.syncQueue?.enqueue(file);
 			})
 		);
 	}
 
 	onunload(): void {
-		for (const timer of this.saveDebounceTimers.values()) {
-			clearTimeout(timer);
-		}
-		this.saveDebounceTimers.clear();
+		this.syncQueue?.clear();
 	}
 
 	// -----------------------------------------------------------------------
@@ -315,9 +314,14 @@ export default class HonchoPlugin extends Plugin {
 			const ctx = createIngestContext(
 				this.app, client, workspaceId, peerId, observedPeerId, this.settings.trackFrontmatter
 			);
-			const created = await ingestNote(ctx, file);
+			const result = await ingestNote(ctx, file);
 			if (!silent) {
-				new Notice(`Ingested ${file.basename}: ${created.length} message${created.length !== 1 ? "s" : ""}`);
+				if (result.skipped) {
+					new Notice(`${file.basename}: skipped (${result.reason ?? "unchanged"})`);
+				} else {
+					const n = result.messages.length;
+					new Notice(`Ingested ${file.basename}: ${n} message${n !== 1 ? "s" : ""}`);
+				}
 			}
 		} catch (err) {
 			new Notice(`Ingest failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -330,8 +334,10 @@ export default class HonchoPlugin extends Plugin {
 			const ctx = createIngestContext(
 				this.app, client, workspaceId, peerId, observedPeerId, this.settings.trackFrontmatter
 			);
-			const total = await ingestLinked(ctx, file, this.settings.linkDepth);
-			new Notice(`Ingested ${file.basename} + linked: ${total} message${total !== 1 ? "s" : ""}`);
+			const result = await ingestLinked(ctx, file, this.settings.linkDepth);
+			const parts = [`${result.ingested} ingested`];
+			if (result.skipped > 0) parts.push(`${result.skipped} unchanged`);
+			new Notice(`${file.basename} + linked: ${parts.join(", ")}`);
 		} catch (err) {
 			new Notice(`Ingest failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
@@ -343,8 +349,13 @@ export default class HonchoPlugin extends Plugin {
 			const ctx = createIngestContext(
 				this.app, client, workspaceId, peerId, observedPeerId, this.settings.trackFrontmatter
 			);
-			const total = await ingestFolder(ctx, folder);
-			new Notice(`Ingested ${folder.name}: ${total} message${total !== 1 ? "s" : ""}`);
+			const result = await ingestFolder(ctx, folder);
+			const { counts } = result;
+			const parts: string[] = [];
+			if (counts.new > 0) parts.push(`${counts.new} new`);
+			if (counts.modified > 0) parts.push(`${counts.modified} modified`);
+			if (counts.unchanged > 0) parts.push(`${counts.unchanged} unchanged`);
+			new Notice(`${folder.name}: ${parts.join(", ")}`);
 		} catch (err) {
 			new Notice(`Ingest failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
@@ -433,8 +444,13 @@ export default class HonchoPlugin extends Plugin {
 				const ctx = createIngestContext(
 					this.app, client, workspaceId, peerId, observedPeerId, this.settings.trackFrontmatter
 				);
-				const total = await ingestByTag(ctx, tag);
-				new Notice(`Ingested ${tag}: ${total} message${total !== 1 ? "s" : ""}`);
+				const result = await ingestByTag(ctx, tag);
+				const { counts } = result;
+				const parts: string[] = [];
+				if (counts.new > 0) parts.push(`${counts.new} new`);
+				if (counts.modified > 0) parts.push(`${counts.modified} modified`);
+				if (counts.unchanged > 0) parts.push(`${counts.unchanged} unchanged`);
+				new Notice(`${tag}: ${parts.join(", ")}`);
 			} catch (err) {
 				new Notice(`Ingest failed: ${err instanceof Error ? err.message : String(err)}`);
 			}
@@ -477,6 +493,22 @@ export default class HonchoPlugin extends Plugin {
 				headings: (cache?.headings ?? []).map((h) => h.heading),
 			};
 			new HonchoChatModal(this.app, client, workspaceId, observedPeerId, noteContext).open();
+		} catch (err) {
+			new Notice(`${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// Stale Notes
+	// -----------------------------------------------------------------------
+
+	private async openStaleNotes(): Promise<void> {
+		try {
+			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
+			const ctx = createIngestContext(
+				this.app, client, workspaceId, peerId, observedPeerId, this.settings.trackFrontmatter
+			);
+			new StaleNotesModal(this.app, ctx).open();
 		} catch (err) {
 			new Notice(`${err instanceof Error ? err.message : String(err)}`);
 		}

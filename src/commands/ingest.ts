@@ -2,6 +2,7 @@ import { type App, Notice, TFile, TFolder } from "obsidian";
 import type { HonchoClient, MessageResponse, SessionConfiguration } from "../honcho-client";
 import { chunkMarkdown } from "../utils/chunker";
 import { writeHonchoFrontmatter } from "../utils/frontmatter";
+import { checkSyncStatusAsync, partitionByStatus, stripFrontmatter, computeContentHash } from "../utils/sync-status";
 
 export interface IngestContext {
 	app: App;
@@ -10,6 +11,16 @@ export interface IngestContext {
 	observerPeerId: string;
 	observedPeerId: string;
 	trackFrontmatter: boolean;
+}
+
+export interface IngestOptions {
+	force?: boolean;
+}
+
+export interface IngestResult {
+	messages: MessageResponse[];
+	skipped: boolean;
+	reason?: string;
 }
 
 /**
@@ -121,17 +132,33 @@ function ingestSessionConfig(): SessionConfiguration {
  * Ingest a single note with full structural context.
  * Creates a session per file, chunks content into messages with metadata,
  * and lets Honcho's observation pipeline derive conclusions.
+ *
+ * Checks sync status first -- returns early if content is unchanged
+ * (unless force: true).
  */
 export async function ingestNote(
 	ctx: IngestContext,
-	file: TFile
-): Promise<MessageResponse[]> {
+	file: TFile,
+	opts?: IngestOptions
+): Promise<IngestResult> {
+	// Gate: check if content has actually changed
+	if (!opts?.force) {
+		const status = await checkSyncStatusAsync(ctx.app, file);
+		if (!status.needsSync) {
+			return { messages: [], skipped: true, reason: "unchanged" };
+		}
+	}
+
 	const content = await ctx.app.vault.cachedRead(file);
 	const chunks = chunkMarkdown(content);
 
 	if (chunks.length === 0) {
-		return [];
+		return { messages: [], skipped: true, reason: "empty" };
 	}
+
+	// Compute content hash for post-ingest tracking
+	const body = stripFrontmatter(content);
+	const contentHash = computeContentHash(body);
 
 	const sessionId = sessionIdForFile(file);
 	const structural = extractStructuralContext(ctx.app, file);
@@ -212,39 +239,54 @@ export async function ingestNote(
 			honcho_synced: new Date().toISOString(),
 			honcho_session_id: session.id,
 			honcho_message_count: created.length,
+			honcho_content_hash: contentHash,
 		});
 	}
 
-	return created;
+	return { messages: created, skipped: false };
+}
+
+export interface BatchIngestResult {
+	totalMessages: number;
+	counts: { new: number; modified: number; unchanged: number };
 }
 
 /**
  * Ingest all markdown files in a folder (non-recursive).
+ * Partitions by sync status first so unchanged files are skipped.
  */
 export async function ingestFolder(
 	ctx: IngestContext,
 	folder: TFolder
-): Promise<number> {
+): Promise<BatchIngestResult> {
 	const files = folder.children.filter(
 		(f): f is TFile => f instanceof TFile && f.extension === "md"
 	);
 
 	if (files.length === 0) {
 		new Notice(`No markdown files in ${folder.name}`);
-		return 0;
+		return { totalMessages: 0, counts: { new: 0, modified: 0, unchanged: 0 } };
 	}
 
-	let total = 0;
-	const batchSize = 5;
+	const partition = await partitionByStatus(ctx.app, files);
 
-	for (let i = 0; i < files.length; i += batchSize) {
-		const batch = files.slice(i, i + batchSize);
-		const results = await Promise.all(batch.map((f) => ingestNote(ctx, f)));
-		total += results.reduce((sum, r) => sum + r.length, 0);
+	if (partition.needsSync.length === 0) {
+		new Notice(`${folder.name}: ${partition.counts.unchanged} unchanged, nothing to ingest`);
+		return { totalMessages: 0, counts: partition.counts };
+	}
+
+	let totalMessages = 0;
+	const batchSize = 5;
+	const toIngest = partition.needsSync.map((e) => e.file);
+
+	for (let i = 0; i < toIngest.length; i += batchSize) {
+		const batch = toIngest.slice(i, i + batchSize);
+		const results = await Promise.all(batch.map((f) => ingestNote(ctx, f, { force: true })));
+		totalMessages += results.reduce((sum, r) => sum + r.messages.length, 0);
 	}
 
 	// Schedule a dream after bulk ingestion
-	if (total > 0) {
+	if (totalMessages > 0) {
 		try {
 			await ctx.client.scheduleDream(
 				ctx.workspaceId,
@@ -256,16 +298,17 @@ export async function ingestFolder(
 		}
 	}
 
-	return total;
+	return { totalMessages, counts: partition.counts };
 }
 
 /**
  * Ingest all notes matching a specific tag across the vault.
+ * Partitions by sync status first so unchanged files are skipped.
  */
 export async function ingestByTag(
 	ctx: IngestContext,
 	tag: string
-): Promise<number> {
+): Promise<BatchIngestResult> {
 	const normalizedTag = (tag.startsWith("#") ? tag : "#" + tag).toLowerCase();
 	const files: TFile[] = [];
 
@@ -286,20 +329,28 @@ export async function ingestByTag(
 
 	if (files.length === 0) {
 		new Notice(`No notes found with tag ${tag}`);
-		return 0;
+		return { totalMessages: 0, counts: { new: 0, modified: 0, unchanged: 0 } };
 	}
 
-	let total = 0;
-	const batchSize = 5;
+	const partition = await partitionByStatus(ctx.app, files);
 
-	for (let i = 0; i < files.length; i += batchSize) {
-		const batch = files.slice(i, i + batchSize);
-		const results = await Promise.all(batch.map((f) => ingestNote(ctx, f)));
-		total += results.reduce((sum, r) => sum + r.length, 0);
+	if (partition.needsSync.length === 0) {
+		new Notice(`${tag}: ${partition.counts.unchanged} unchanged, nothing to ingest`);
+		return { totalMessages: 0, counts: partition.counts };
+	}
+
+	let totalMessages = 0;
+	const batchSize = 5;
+	const toIngest = partition.needsSync.map((e) => e.file);
+
+	for (let i = 0; i < toIngest.length; i += batchSize) {
+		const batch = toIngest.slice(i, i + batchSize);
+		const results = await Promise.all(batch.map((f) => ingestNote(ctx, f, { force: true })));
+		totalMessages += results.reduce((sum, r) => sum + r.messages.length, 0);
 	}
 
 	// Schedule a dream after bulk ingestion
-	if (total > 0) {
+	if (totalMessages > 0) {
 		try {
 			await ctx.client.scheduleDream(
 				ctx.workspaceId,
@@ -311,31 +362,39 @@ export async function ingestByTag(
 		}
 	}
 
-	return total;
+	return { totalMessages, counts: partition.counts };
 }
 
 /**
  * Ingest a note and all notes it links to (one level deep).
  * Follows outgoing links transitively up to the specified depth.
+ * Respects sync status -- only ingests notes whose content has changed.
  */
 export async function ingestLinked(
 	ctx: IngestContext,
 	file: TFile,
 	depth = 1
-): Promise<number> {
+): Promise<{ totalMessages: number; ingested: number; skipped: number }> {
 	const visited = new Set<string>();
 	const queue: Array<{ file: TFile; currentDepth: number }> = [
 		{ file, currentDepth: 0 },
 	];
-	let total = 0;
+	let totalMessages = 0;
+	let ingested = 0;
+	let skipped = 0;
 
 	while (queue.length > 0) {
 		const item = queue.shift()!;
 		if (visited.has(item.file.path)) continue;
 		visited.add(item.file.path);
 
-		const results = await ingestNote(ctx, item.file);
-		total += results.length;
+		const result = await ingestNote(ctx, item.file);
+		if (result.skipped) {
+			skipped++;
+		} else {
+			totalMessages += result.messages.length;
+			ingested++;
+		}
 
 		// Follow links if we haven't reached max depth
 		if (item.currentDepth < depth) {
@@ -360,7 +419,7 @@ export async function ingestLinked(
 	}
 
 	// Schedule a dream after transitive ingestion
-	if (total > 0) {
+	if (totalMessages > 0) {
 		try {
 			await ctx.client.scheduleDream(
 				ctx.workspaceId,
@@ -372,7 +431,7 @@ export async function ingestLinked(
 		}
 	}
 
-	return total;
+	return { totalMessages, ingested, skipped };
 }
 
 /**
