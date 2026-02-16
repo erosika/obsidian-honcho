@@ -18,6 +18,8 @@ export default class HonchoPlugin extends Plugin {
 	private client: HonchoClient | null = null;
 	private syncQueue: SyncQueue | null = null;
 	private initialized = false;
+	/** Files currently being ingested -- suppresses re-entrant modify events */
+	private ingestingPaths = new Set<string>();
 	private workspaceId = "";
 	private peerId = "";
 	private observedPeerId = "";
@@ -194,6 +196,9 @@ export default class HonchoPlugin extends Plugin {
 				) {
 					return;
 				}
+				// Skip files currently being written to by our own ingest
+				if (this.ingestingPaths.has(file.path)) return;
+
 				if (!matchesSyncFilters(
 					this.app,
 					file,
@@ -208,6 +213,7 @@ export default class HonchoPlugin extends Plugin {
 		);
 
 		// -- Auto-ingest on file creation --
+		// Delay filter check by 1s to let metadata cache populate (tags, frontmatter)
 		this.registerEvent(
 			this.app.vault.on("create", (file) => {
 				if (
@@ -217,15 +223,32 @@ export default class HonchoPlugin extends Plugin {
 				) {
 					return;
 				}
-				if (!matchesSyncFilters(
-					this.app,
-					file,
-					this.settings.autoSyncTags,
-					this.settings.autoSyncFolders
-				)) {
+
+				setTimeout(() => {
+					if (!matchesSyncFilters(
+						this.app,
+						file,
+						this.settings.autoSyncTags,
+						this.settings.autoSyncFolders
+					)) {
+						return;
+					}
+					this.syncQueue?.enqueue(file);
+				}, 1000);
+			})
+		);
+
+		// -- Auto-sync daily notes on open --
+		this.registerEvent(
+			this.app.workspace.on("file-open", (file) => {
+				if (
+					!this.settings.autoSyncDailyNotes ||
+					!file ||
+					file.extension !== "md" ||
+					!this.isDailyNote(file)
+				) {
 					return;
 				}
-
 				this.syncQueue?.enqueue(file);
 			})
 		);
@@ -234,6 +257,8 @@ export default class HonchoPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
 				if (!(file instanceof TFile) || file.extension !== "md") return;
+				// Clear any pending sync for the old path
+				this.syncQueue?.remove(oldPath);
 				this.handleFileRename(file, oldPath);
 			})
 		);
@@ -242,6 +267,8 @@ export default class HonchoPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on("delete", (file) => {
 				if (!(file instanceof TFile) || file.extension !== "md") return;
+				// Clear any pending sync for the deleted file
+				this.syncQueue?.remove(file.path);
 				this.handleFileDelete(file.path);
 			})
 		);
@@ -348,6 +375,7 @@ export default class HonchoPlugin extends Plugin {
 	// -----------------------------------------------------------------------
 
 	private async runIngest(file: TFile, silent = false): Promise<void> {
+		this.ingestingPaths.add(file.path);
 		try {
 			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
 			const ctx = createIngestContext(
@@ -364,6 +392,8 @@ export default class HonchoPlugin extends Plugin {
 			}
 		} catch (err) {
 			new Notice(`Ingest failed: ${err instanceof Error ? err.message : String(err)}`);
+		} finally {
+			this.ingestingPaths.delete(file.path);
 		}
 	}
 
@@ -635,6 +665,31 @@ export default class HonchoPlugin extends Plugin {
 		} catch (err) {
 			new Notice(`Failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
+	}
+
+	// -----------------------------------------------------------------------
+	// Daily notes
+	// -----------------------------------------------------------------------
+
+	isDailyNote(file: TFile): boolean {
+		const dailyPlugin = (this.app as any).internalPlugins?.plugins?.["daily-notes"];
+		if (!dailyPlugin?.enabled) return false;
+
+		const config = dailyPlugin.instance?.options ?? {};
+		const folder = config.folder ?? "";
+		const format = config.format ?? "YYYY-MM-DD";
+
+		// Check folder match
+		const fileFolder = file.parent?.path ?? "";
+		if (folder && fileFolder !== folder) return false;
+
+		// Check if basename plausibly matches the date format
+		// Simple heuristic: basename length matches format length and contains digits
+		const basename = file.basename;
+		if (basename.length !== format.length) return false;
+		if (!/\d/.test(basename)) return false;
+
+		return true;
 	}
 
 	// -----------------------------------------------------------------------

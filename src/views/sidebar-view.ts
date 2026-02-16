@@ -1,6 +1,6 @@
 import { ItemView, MarkdownRenderer, TFile, type EventRef, type WorkspaceLeaf } from "obsidian";
 import type HonchoPlugin from "../main";
-import type { ConclusionResponse } from "../honcho-client";
+import type { ConclusionResponse, MessageResponse } from "../honcho-client";
 import { findStaleNotes } from "../utils/sync-status";
 
 export const HONCHO_VIEW_TYPE = "honcho-sidebar";
@@ -25,6 +25,10 @@ export class HonchoSidebarView extends ItemView {
 	// Stale notes cache (30s TTL)
 	private staleCountCache: { count: number; ts: number } | null = null;
 	private static readonly STALE_CACHE_TTL = 30_000;
+
+	// Connection status cache (60s TTL)
+	private connectionCache: { ok: boolean; ts: number } | null = null;
+	private static readonly CONN_CACHE_TTL = 60_000;
 
 	// Contextual representation debounce
 	private contextualRequestId = 0;
@@ -109,7 +113,11 @@ export class HonchoSidebarView extends ItemView {
 			text: "Refresh",
 			cls: "honcho-refresh-btn",
 		});
-		refreshBtn.addEventListener("click", () => this.render());
+		refreshBtn.addEventListener("click", () => {
+			this.connectionCache = null; // invalidate on explicit refresh
+			this.staleCountCache = null;
+			this.render();
+		});
 
 		// Search bar
 		const searchBar = el.createDiv({ cls: "honcho-sidebar-search" });
@@ -133,8 +141,14 @@ export class HonchoSidebarView extends ItemView {
 			const workspaceId = this.plugin.getWorkspaceId();
 			const peerId = this.plugin.getPeerId();
 
-			// Test connection
-			const ok = await client.testConnection();
+			// Test connection (cached)
+			let ok: boolean;
+			if (this.connectionCache && Date.now() - this.connectionCache.ts < HonchoSidebarView.CONN_CACHE_TTL) {
+				ok = this.connectionCache.ok;
+			} else {
+				ok = await client.testConnection();
+				this.connectionCache = { ok, ts: Date.now() };
+			}
 			statusEl.empty();
 			const dot = statusEl.createSpan({ cls: ok ? "honcho-dot-ok" : "honcho-dot-err" });
 			dot.setText(ok ? "\u25CF" : "\u25CF");
@@ -510,23 +524,54 @@ export class HonchoSidebarView extends ItemView {
 		try {
 			const workspaceId = this.plugin.getWorkspaceId();
 			const peerId = this.plugin.getPeerId();
-			const results = await client.searchConclusions(workspaceId, query, {
-				top_k: 10,
-				filters: { observer_id: peerId, observed_id: peerId },
-			});
+
+			// Search both conclusions and workspace messages in parallel
+			const [conclusions, messages] = await Promise.all([
+				client.searchConclusions(workspaceId, query, {
+					top_k: 5,
+					filters: { observer_id: peerId, observed_id: peerId },
+				}),
+				client.searchWorkspace(workspaceId, query, { limit: 5 }),
+			]);
 
 			resultsEl.empty();
-			if (results.length === 0) {
+
+			if (conclusions.length === 0 && messages.length === 0) {
 				resultsEl.createEl("p", { text: "No results.", cls: "honcho-sidebar-empty" });
 				return;
 			}
 
-			for (const r of results) {
+			// Conclusions
+			for (const r of conclusions) {
 				const card = resultsEl.createDiv({ cls: "honcho-result-card" });
 				card.createEl("div", {
 					text: r.content,
 					cls: "honcho-result-content",
 				});
+			}
+
+			// Messages with source file links
+			for (const m of messages) {
+				const card = resultsEl.createDiv({ cls: "honcho-result-card" });
+				card.createEl("div", {
+					text: m.content,
+					cls: "honcho-result-content",
+				});
+				const sourceFile = m.metadata?.source_file as string | undefined;
+				if (sourceFile) {
+					const link = card.createEl("a", {
+						text: sourceFile,
+						cls: "honcho-result-source",
+						href: "#",
+					});
+					link.addEventListener("click", (e) => {
+						e.preventDefault();
+						const file = this.app.vault.getAbstractFileByPath(sourceFile);
+						if (file instanceof TFile) {
+							this.app.workspace.getLeaf().openFile(file);
+						}
+					});
+				}
 			}
 		} catch (err) {
 			resultsEl.empty();

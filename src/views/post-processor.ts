@@ -48,10 +48,6 @@ export function registerHonchoCodeBlock(plugin: HonchoPlugin): void {
 		const command = lines[0].toLowerCase();
 
 		try {
-			// Ensure workspace + peer exist
-			await client.getOrCreateWorkspace(workspaceId);
-			await client.getOrCreatePeer(workspaceId, peerId, { observe_me: true });
-
 			if (command.startsWith("search:")) {
 				await renderSearch(client, workspaceId, peerId, lines, el, plugin);
 			} else if (command === "card") {

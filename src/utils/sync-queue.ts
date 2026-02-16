@@ -1,4 +1,5 @@
 import { type App, type TFile } from "obsidian";
+import { countBacklinks } from "../commands/ingest";
 
 export type IngestHandler = (file: TFile) => Promise<void>;
 
@@ -6,11 +7,14 @@ interface QueueEntry {
 	file: TFile;
 	enqueuedAt: number;
 	priority: number;
+	retryCount: number;
 }
 
 const DEBOUNCE_MS = 5000;
 const BATCH_SIZE = 3;
 const NEW_FILE_BONUS = 50;
+const MAX_QUEUE_RETRIES = 2;
+const RETRY_PRIORITY_DECAY = 10;
 
 /**
  * Priority-based auto-sync queue.
@@ -46,28 +50,19 @@ export class SyncQueue {
 		this.debounceTimers.set(file.path, timer);
 	}
 
-	private addToPending(file: TFile): void {
-		const priority = this.computePriority(file);
+	private addToPending(file: TFile, retryCount = 0, priorityOverride?: number): void {
+		const priority = priorityOverride ?? this.computePriority(file);
 		this.pending.set(file.path, {
 			file,
 			enqueuedAt: Date.now(),
 			priority,
+			retryCount,
 		});
 		this.scheduleFlush();
 	}
 
 	private computePriority(file: TFile): number {
-		let priority = 0;
-
-		// Backlink count as graph centrality proxy
-		const resolved = this.app.metadataCache.resolvedLinks;
-		if (resolved) {
-			for (const sourcePath in resolved) {
-				if (resolved[sourcePath]?.[file.path]) {
-					priority++;
-				}
-			}
-		}
+		let priority = countBacklinks(this.app, file);
 
 		// New file bonus: files not yet synced get prioritized
 		const cache = this.app.metadataCache.getFileCache(file);
@@ -104,9 +99,25 @@ export class SyncQueue {
 			}
 
 			// Process batch concurrently
-			await Promise.allSettled(
+			const results = await Promise.allSettled(
 				batch.map((entry) => this.handler(entry.file))
 			);
+
+			// Re-enqueue failures with decayed priority
+			for (let i = 0; i < results.length; i++) {
+				if (results[i].status === "rejected") {
+					const entry = batch[i];
+					const nextRetry = entry.retryCount + 1;
+					if (nextRetry <= MAX_QUEUE_RETRIES) {
+						this.addToPending(
+							entry.file,
+							nextRetry,
+							entry.priority - RETRY_PRIORITY_DECAY
+						);
+					}
+					// else: dropped after max retries (HTTP layer already retried 3x per attempt)
+				}
+			}
 		} finally {
 			this.processing = false;
 		}
@@ -115,6 +126,16 @@ export class SyncQueue {
 		if (this.pending.size > 0) {
 			this.scheduleFlush();
 		}
+	}
+
+	/** Remove a file from all queue stages (debounce + pending). */
+	remove(path: string): void {
+		const timer = this.debounceTimers.get(path);
+		if (timer) {
+			clearTimeout(timer);
+			this.debounceTimers.delete(path);
+		}
+		this.pending.delete(path);
 	}
 
 	get size(): number {

@@ -11,6 +11,7 @@ export interface HonchoPluginSettings {
 	autoSync: boolean;
 	autoSyncTags: string[];
 	autoSyncFolders: string[];
+	autoSyncDailyNotes: boolean;
 	trackFrontmatter: boolean;
 	linkDepth: number;
 }
@@ -25,6 +26,7 @@ export const DEFAULT_SETTINGS: HonchoPluginSettings = {
 	autoSync: false,
 	autoSyncTags: [],
 	autoSyncFolders: [],
+	autoSyncDailyNotes: false,
 	trackFrontmatter: true,
 	linkDepth: 1,
 };
@@ -212,6 +214,19 @@ export class HonchoSettingTab extends PluginSettingTab {
 							.filter((f) => f.length > 0);
 						this.debouncedSave();
 					})
+			);
+
+		// -- Daily Notes --
+		containerEl.createEl("h3", { text: "Daily Notes" });
+
+		new Setting(containerEl)
+			.setName("Auto-sync daily notes")
+			.setDesc("Automatically sync daily notes to Honcho when opened")
+			.addToggle((toggle) =>
+				toggle.setValue(this.plugin.settings.autoSyncDailyNotes).onChange(async (value) => {
+					this.plugin.settings.autoSyncDailyNotes = value;
+					await this.plugin.saveSettings();
+				})
 			);
 
 		// -- Frontmatter --

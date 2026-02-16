@@ -69,11 +69,12 @@ export function matchesSyncFilters(
 	// If no filters configured, everything matches
 	if (tags.length === 0 && folders.length === 0) return true;
 
-	// Check folder
+	// Check folder (strip trailing slashes to handle user input like "notes/")
 	if (folders.length > 0) {
-		const inFolder = folders.some(
-			(f) => file.path.startsWith(f + "/") || file.path === f
-		);
+		const inFolder = folders.some((f) => {
+			const normalized = f.replace(/\/+$/, "");
+			return normalized && file.path.startsWith(normalized + "/");
+		});
 		if (inFolder) return true;
 	}
 

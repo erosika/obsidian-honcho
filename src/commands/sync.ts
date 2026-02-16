@@ -1,5 +1,5 @@
 import { type App, Notice, TFile, normalizePath } from "obsidian";
-import type { HonchoClient } from "../honcho-client";
+import type { HonchoClient, ConclusionResponse } from "../honcho-client";
 
 interface SyncContext {
 	app: App;
@@ -42,15 +42,31 @@ export async function generateIdentityNote(ctx: SyncContext): Promise<TFile> {
 
 	const fileName = `Honcho Identity -- ${ctx.peerId}`;
 	const path = normalizePath(`${fileName}.md`);
+	const content = lines.join("\n");
 
 	const existing = ctx.app.vault.getAbstractFileByPath(path);
 	if (existing instanceof TFile) {
-		await ctx.app.vault.modify(existing, lines.join("\n"));
+		// Check if user has edited the file since it was last generated
+		const cache = ctx.app.metadataCache.getFileCache(existing);
+		const generatedAt = cache?.frontmatter?.honcho_generated as string | undefined;
+		const generatedTime = generatedAt ? new Date(generatedAt).getTime() : 0;
+		const userEdited = existing.stat.mtime > generatedTime + 2000; // 2s grace for write propagation
+
+		if (userEdited) {
+			// Don't overwrite user edits -- create a timestamped version
+			const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+			const newPath = normalizePath(`${fileName} ${ts}.md`);
+			const file = await ctx.app.vault.create(newPath, content);
+			new Notice(`Created new ${fileName} (existing file has user edits)`);
+			return file;
+		}
+
+		await ctx.app.vault.modify(existing, content);
 		new Notice(`Updated ${fileName}`);
 		return existing;
 	}
 
-	const file = await ctx.app.vault.create(path, lines.join("\n"));
+	const file = await ctx.app.vault.create(path, content);
 	new Notice(`Created ${fileName}`);
 	return file;
 }
@@ -60,20 +76,30 @@ export async function generateIdentityNote(ctx: SyncContext): Promise<TFile> {
  */
 export async function pullConclusions(
 	ctx: SyncContext,
-	count = 50
+	pageSize = 50
 ): Promise<TFile> {
-	const resp = await ctx.client.listConclusions(
-		ctx.workspaceId,
-		{ observer_id: ctx.peerId, observed_id: ctx.peerId },
-		1,
-		count
-	);
+	// Paginate through all conclusions
+	const allItems: ConclusionResponse[] = [];
+	let page = 1;
+	let totalPages = 1;
+
+	do {
+		const resp = await ctx.client.listConclusions(
+			ctx.workspaceId,
+			{ observer_id: ctx.peerId, observed_id: ctx.peerId },
+			page,
+			pageSize
+		);
+		allItems.push(...resp.items);
+		totalPages = resp.pages;
+		page++;
+	} while (page <= totalPages);
 
 	const lines: string[] = [
 		"---",
 		`honcho_generated: ${new Date().toISOString()}`,
 		`honcho_peer: ${ctx.peerId}`,
-		`honcho_count: ${resp.items.length}`,
+		`honcho_count: ${allItems.length}`,
 		"tags:",
 		"  - honcho",
 		"  - honcho/conclusions",
@@ -83,10 +109,10 @@ export async function pullConclusions(
 		"",
 	];
 
-	if (resp.items.length === 0) {
+	if (allItems.length === 0) {
 		lines.push("*No conclusions yet.*");
 	} else {
-		for (const item of resp.items) {
+		for (const item of allItems) {
 			const date = new Date(item.created_at).toLocaleDateString();
 			lines.push(`- **${date}**: ${item.content}`);
 		}
@@ -95,16 +121,30 @@ export async function pullConclusions(
 
 	const fileName = `Honcho Conclusions -- ${ctx.peerId}`;
 	const path = normalizePath(`${fileName}.md`);
+	const content = lines.join("\n");
 
 	const existing = ctx.app.vault.getAbstractFileByPath(path);
 	if (existing instanceof TFile) {
-		await ctx.app.vault.modify(existing, lines.join("\n"));
-		new Notice(`Updated ${fileName} (${resp.items.length} conclusions)`);
+		const cache = ctx.app.metadataCache.getFileCache(existing);
+		const generatedAt = cache?.frontmatter?.honcho_generated as string | undefined;
+		const generatedTime = generatedAt ? new Date(generatedAt).getTime() : 0;
+		const userEdited = existing.stat.mtime > generatedTime + 2000;
+
+		if (userEdited) {
+			const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+			const newPath = normalizePath(`${fileName} ${ts}.md`);
+			const file = await ctx.app.vault.create(newPath, content);
+			new Notice(`Created new ${fileName} (existing file has user edits)`);
+			return file;
+		}
+
+		await ctx.app.vault.modify(existing, content);
+		new Notice(`Updated ${fileName} (${allItems.length} conclusions)`);
 		return existing;
 	}
 
-	const file = await ctx.app.vault.create(path, lines.join("\n"));
-	new Notice(`Created ${fileName} (${resp.items.length} conclusions)`);
+	const file = await ctx.app.vault.create(path, content);
+	new Notice(`Created ${fileName} (${allItems.length} conclusions)`);
 	return file;
 }
 
