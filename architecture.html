@@ -349,7 +349,7 @@
   <p class="subtitle">How the act of writing becomes identity. A bidirectional bridge between Obsidian's structural knowledge and Honcho's memory platform.</p>
   <div class="meta">
     <span><a href="https://github.com/erosika/obsidian-honcho">erosika/obsidian-honcho</a></span>
-    <span>TypeScript / Obsidian Plugin + MCP</span>
+    <span>TypeScript / Obsidian Plugin</span>
     <span>February 2026</span>
   </div>
 </header>
@@ -366,8 +366,8 @@
     <li><a href="#dreaming">Dreaming & Consolidation</a></li>
     <li><a href="#peer-architecture">Peer Architecture</a></li>
     <li><a href="#graph-ingestion">Graph-Aware Ingestion</a></li>
+    <li><a href="#dynamic-filtering">Dynamic Filtering & Sync Intelligence</a></li>
     <li><a href="#streaming-chat">Streaming Dialectic Chat</a></li>
-    <li><a href="#mcp-server">MCP Server</a></li>
     <li><a href="#session-management">Session Management</a></li>
     <li><a href="#explorer-and-context">Conclusion Explorer & Contextual Intelligence</a></li>
     <li><a href="#code-blocks">Inline Code Blocks</a></li>
@@ -456,6 +456,7 @@
         <tr><td>Pull conclusions into vault</td><td>Create a vault note with all conclusions (tagged #honcho)</td></tr>
         <tr><td>Push note as peer card</td><td>Parse bullet points from active note, set as peer card</td></tr>
         <tr><td>Schedule Honcho dream</td><td>Manually trigger memory consolidation</td></tr>
+        <tr><td>Show stale notes</td><td>List all ingested notes modified since last sync, with re-ingest actions</td></tr>
       </tbody>
     </table>
   </div>
@@ -469,25 +470,7 @@ limit: 5
   <p>Also: <code>card</code>, <code>representation</code>, <code>conclusions 10</code>. Switch to reading view to see results.</p>
 
   <h3>9. Auto-sync (optional)</h3>
-  <p>Settings &#x2192; Honcho &#x2192; toggle <strong>Auto-sync on save</strong>. Optionally filter by tags or folders so only relevant notes get sent automatically. Debounced to 5 seconds per file.</p>
-
-  <h3>10. MCP server (optional)</h3>
-  <p>For vault awareness from outside Obsidian (Claude Code, Claude Desktop, other MCP clients):</p>
-  <pre><code><span class="fn">cd</span> obsidian-honcho/mcp
-<span class="fn">bun</span> install</code></pre>
-  <p>Then add to your MCP config:</p>
-  <pre><code>{
-  <span class="key">"mcpServers"</span>: {
-    <span class="key">"honcho-vault"</span>: {
-      <span class="key">"command"</span>: <span class="str">"bun"</span>,
-      <span class="key">"args"</span>: [<span class="str">"run"</span>, <span class="str">"path/to/obsidian-honcho/mcp/server.ts"</span>],
-      <span class="key">"env"</span>: {
-        <span class="str">"HONCHO_API_KEY"</span>: <span class="str">"your-key"</span>,
-        <span class="str">"VAULT_PATH"</span>: <span class="str">"/path/to/your/vault"</span>
-      }
-    }
-  }
-}</code></pre>
+  <p>Settings &#x2192; Honcho &#x2192; toggle <strong>Auto-sync on save</strong>. Optionally filter by tags or folders so only relevant notes get sent automatically. Uses a priority-based sync queue with 5-second debounce per file, batching, and graph-centrality ordering.</p>
 </section>
 
 <!-- =============== CORE THESIS =============== -->
@@ -526,16 +509,19 @@ limit: 5
   <div class="mermaid">
 %%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#1f3150', 'primaryTextColor': '#c9d1d9', 'primaryBorderColor': '#3d6ea5', 'lineColor': '#3d6ea5', 'secondaryColor': '#162030', 'tertiaryColor': '#11151c', 'edgeLabelBackground': '#0b0e14' }}}%%
 flowchart LR
-    N["Notes + Tags<br/>Links + Folders"] -->|ingest| CH["Chunk &<br/>Context"]
+    N["Notes + Tags<br/>Links + Folders"] -->|hash check| DF["Sync<br/>Filter"]
+    DF -->|changed only| CH["Chunk &<br/>Context"]
     CH -->|messages| S["Sessions"]
     S --> O["Observe"]
     O --> C["Conclusions"]
     C --> D["Dream"]
     C --> R["Represent"]
-    R -->|sync back| F["Frontmatter"]
+    R -->|sync back| F["Frontmatter<br/>+ Hash"]
     R <-->|dialectic| Q["Chat"]
+    F -.->|content hash| DF
 
     style N fill:#162030,stroke:#3d6ea5,color:#c9d1d9
+    style DF fill:#162030,stroke:#7eb8f6,color:#c9d1d9
     style F fill:#162030,stroke:#3d6ea5,color:#c9d1d9
     style CH fill:#1f3150,stroke:#3d6ea5,color:#c9d1d9
     style Q fill:#1f3150,stroke:#3d6ea5,color:#c9d1d9
@@ -556,7 +542,7 @@ flowchart LR
 
   <h3>Honcho &#x2192; Vault</h3>
   <ul>
-    <li><strong>Frontmatter tracking</strong> -- <code>honcho_synced</code>, <code>honcho_session_id</code>, <code>honcho_message_count</code> written atomically via <code>processFrontMatter()</code></li>
+    <li><strong>Frontmatter tracking</strong> -- <code>honcho_synced</code>, <code>honcho_session_id</code>, <code>honcho_message_count</code>, <code>honcho_content_hash</code> written atomically via <code>processFrontMatter()</code></li>
     <li><strong>Identity notes</strong> -- peer card + representation rendered as markdown documents in the vault</li>
     <li><strong>Conclusions notes</strong> -- all derived observations pulled into a browsable vault document</li>
     <li><strong>Dialectic chat</strong> -- streaming conversation grounded in vault-derived identity, saveable as vault notes</li>
@@ -779,6 +765,54 @@ flowchart TD
   <p>The traversal depth is configurable (1-3, default 1). At depth 1, a note about "Stoicism" that links to "Marcus Aurelius" and "Epictetus" will ingest all three. At depth 2, it follows those notes' links too. Deeper traversal captures more context but produces more messages.</p>
 </section>
 
+<!-- =============== DYNAMIC FILTERING =============== -->
+<section id="dynamic-filtering">
+  <h2>Dynamic Filtering & Sync Intelligence</h2>
+  <p>The plugin tracks what's been ingested and what's changed, so only modified content flows to Honcho. This prevents duplicate ingestion, eliminates redundant API calls, and gives users visibility into sync state.</p>
+
+  <h3>Content hashing</h3>
+  <p>Each ingested note gets a content hash (FNV-1a, 8 hex chars) stored in frontmatter as <code>honcho_content_hash</code>. The hash is computed on the <strong>body only</strong> (frontmatter stripped first), preventing a feedback loop where writing sync metadata triggers re-ingestion.</p>
+  <pre><code><span class="kw">function</span> computeContentHash(content):
+    hash = FNV_OFFSET  <span class="cm">// 0x811c9dc5</span>
+    <span class="kw">for</span> each char in content:
+        hash ^= charCode
+        hash = hash * FNV_PRIME  <span class="cm">// 0x01000193</span>
+    <span class="kw">return</span> hex(hash, <span class="num">8</span>)</code></pre>
+
+  <h3>Sync status</h3>
+  <p>Before ingesting any note, <code>checkSyncStatus()</code> compares the current body hash against the stored hash. Three possible states:</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Status</th><th>Condition</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td><code>new</code></td><td>No <code>honcho_synced</code> in frontmatter</td><td>Ingest immediately</td></tr>
+        <tr><td><code>modified</code></td><td>Content hash differs from stored hash</td><td>Ingest immediately</td></tr>
+        <tr><td><code>unchanged</code></td><td>Hashes match</td><td>Skip (unless <code>force: true</code>)</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>For notes ingested before content hashing was introduced (no stored hash), the plugin falls back to comparing <code>file.stat.mtime</code> against <code>honcho_synced</code> timestamp.</p>
+
+  <h3>Batch partitioning</h3>
+  <p>Folder and tag ingestion calls <code>partitionByStatus()</code> first, splitting files into <code>needsSync</code> and <code>skipped</code> arrays. Only changed files are sent to the API. The UI reports all three counts: <code>N new, M modified, K unchanged</code>.</p>
+
+  <h3>Stale notes detection</h3>
+  <p><code>findStaleNotes()</code> scans the entire vault for notes with a <code>honcho_synced</code> timestamp whose content has changed since. The stale notes modal shows each stale note with sync/modified dates and provides individual or bulk re-ingest actions. The sidebar caches the stale count with a 30-second TTL to avoid repeated vault scans.</p>
+
+  <h3>Sync queue</h3>
+  <p>Auto-sync uses a centralized <code>SyncQueue</code> rather than naive per-file timers:</p>
+  <ul>
+    <li><strong>Debounce</strong> -- 5-second window per file before it enters the pending queue</li>
+    <li><strong>Priority ordering</strong> -- files are sorted by graph centrality (backlink count) plus a bonus for unsynced files, so hub notes get ingested first</li>
+    <li><strong>Batching</strong> -- processes 3 files at a time with <code>Promise.allSettled()</code></li>
+    <li><strong>Auto-reschedule</strong> -- if entries remain after a flush, the queue schedules another batch</li>
+  </ul>
+
+  <div class="callout">
+    <strong>Frontmatter feedback loop prevention.</strong> Writing <code>honcho_content_hash</code> to frontmatter modifies the file, which would trigger auto-sync, which would re-ingest, which would write frontmatter again. The content hash is computed on the body <em>after</em> stripping frontmatter, so frontmatter-only changes are invisible to the sync status check. The loop is broken at the hash level, not the event level.
+  </div>
+</section>
+
 <!-- =============== STREAMING CHAT =============== -->
 <section id="streaming-chat">
   <h2>Streaming Dialectic Chat</h2>
@@ -809,50 +843,6 @@ flowchart TD
   <p>Conversations can be saved as vault notes with full frontmatter metadata (peer, reasoning level, timestamp).</p>
 </section>
 
-<!-- =============== MCP SERVER =============== -->
-<section id="mcp-server">
-  <h2>MCP Server</h2>
-  <p>A standalone MCP server (<code>mcp/server.ts</code>) exposes vault operations to any MCP-compatible client -- not just Obsidian. This means any tool that speaks MCP can interact with vault identity.</p>
-
-  <h3>Tools</h3>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Tool</th><th>Direction</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr><td><code>vault_ingest</code></td><td>Vault &#x2192; Honcho</td><td>Ingest a markdown note with structural context</td></tr>
-        <tr><td><code>vault_ingest_folder</code></td><td>Vault &#x2192; Honcho</td><td>Bulk ingest + dream scheduling</td></tr>
-        <tr><td><code>vault_search</code></td><td>Honcho &#x2192; Client</td><td>Semantic search across conclusions + messages</td></tr>
-        <tr><td><code>vault_status</code></td><td>Honcho &#x2192; Client</td><td>Workspace config, sessions, queue progress</td></tr>
-        <tr><td><code>vault_sync</code></td><td>Honcho &#x2192; Vault</td><td>Pull identity + conclusions into vault notes</td></tr>
-        <tr><td><code>vault_list</code></td><td>Vault &#x2192; Client</td><td>List notes with sync status and tags</td></tr>
-        <tr><td><code>vault_chat</code></td><td>Honcho &#x2194; Client</td><td>Dialectic reasoning grounded in vault identity</td></tr>
-        <tr><td><code>schedule_dream</code></td><td>Client &#x2192; Honcho</td><td>Trigger memory consolidation</td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <h3>Configuration</h3>
-  <pre><code><span class="cm"># MCP config (Claude Code, Claude Desktop, etc.)</span>
-{
-  <span class="key">"mcpServers"</span>: {
-    <span class="key">"honcho-vault"</span>: {
-      <span class="key">"command"</span>: <span class="str">"bun"</span>,
-      <span class="key">"args"</span>: [<span class="str">"run"</span>, <span class="str">"path/to/obsidian-honcho/mcp/server.ts"</span>],
-      <span class="key">"env"</span>: {
-        <span class="str">"HONCHO_API_KEY"</span>: <span class="str">"your-key"</span>,
-        <span class="str">"VAULT_PATH"</span>: <span class="str">"/path/to/your/vault"</span>,
-        <span class="str">"HONCHO_WORKSPACE"</span>: <span class="str">"my-workspace"</span>,
-        <span class="str">"HONCHO_OBSERVER"</span>: <span class="str">"obsidian"</span>,
-        <span class="str">"HONCHO_OBSERVED"</span>: <span class="str">"eri"</span>
-      }
-    }
-  }
-}</code></pre>
-
-  <h3>How it differs from the Obsidian plugin</h3>
-  <p>The MCP server reads files directly from disk and parses frontmatter/links/tags manually (no access to Obsidian's MetadataCache). The Obsidian plugin has richer structural data from the live metadata cache, especially for backlinks and unresolved links. The MCP server is the right choice when you want vault awareness from outside Obsidian -- from other tools, automated pipelines, or standalone sessions.</p>
-</section>
-
 <!-- =============== SESSION MANAGEMENT =============== -->
 <section id="session-management">
   <h2>Session Management</h2>
@@ -870,6 +860,36 @@ flowchart TD
 
   <h3>Session lifecycle</h3>
   <p>Sessions use deterministic IDs: <code>obsidian:file:{relative_path}</code>. Re-ingesting a note reuses the same session, adding new messages. This means the observation pipeline sees the full history of a note's evolution, not just its current state.</p>
+
+  <h3>Vault event handling</h3>
+  <p>The plugin responds to vault-level file events to keep session metadata consistent with the filesystem:</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Event</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>vault.on("rename")</code></td>
+          <td>Finds the session by old path, updates metadata with new <code>file_path</code>, <code>file_name</code>, <code>folder</code>, and records <code>renamed_from</code> + <code>renamed_at</code></td>
+        </tr>
+        <tr>
+          <td><code>vault.on("delete")</code></td>
+          <td>Marks the session with <code>deleted_from_vault: true</code> and <code>deleted_at</code> timestamp. Preserves derived conclusions rather than deleting the session.</td>
+        </tr>
+        <tr>
+          <td><code>vault.on("create")</code></td>
+          <td>If auto-sync is enabled and the new file matches tag/folder filters, enqueues for auto-ingestion via the sync queue.</td>
+        </tr>
+        <tr>
+          <td><code>vault.on("modify")</code></td>
+          <td>If auto-sync is enabled and the file matches filters, enqueues for re-ingestion via the sync queue (debounced, priority-ordered).</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <strong>Best-effort lifecycle.</strong> Rename and delete handlers are wrapped in try/catch with empty catch blocks. If the API call fails, the user's file operation completes normally. Session metadata becomes stale but no user workflow is disrupted.
+  </div>
 </section>
 
 <!-- =============== EXPLORER & CONTEXT =============== -->
@@ -941,25 +961,25 @@ flowchart TD
 &#x251C;&#x2500;&#x2500; tsconfig.json
 &#x251C;&#x2500;&#x2500; esbuild.config.mjs
 &#x251C;&#x2500;&#x2500; styles.css              <span class="cm"># Obsidian CSS vars only</span>
-&#x251C;&#x2500;&#x2500; src/
-&#x2502;   &#x251C;&#x2500;&#x2500; main.ts             <span class="cm"># Plugin lifecycle, commands, events</span>
-&#x2502;   &#x251C;&#x2500;&#x2500; settings.ts         <span class="cm"># Settings interface + tab</span>
-&#x2502;   &#x251C;&#x2500;&#x2500; honcho-client.ts    <span class="cm"># Full REST client (streaming, dreams, sessions)</span>
-&#x2502;   &#x251C;&#x2500;&#x2500; views/
-&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; sidebar-view.ts    <span class="cm"># Identity sidebar with conclusion explorer + contextual rep</span>
-&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; chat-modal.ts      <span class="cm"># Streaming dialectic chat (generic + contextual)</span>
-&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; session-manager.ts <span class="cm"># Session list, queue status, dream trigger</span>
-&#x2502;   &#x2502;   &#x2514;&#x2500;&#x2500; post-processor.ts  <span class="cm"># &#96;honcho&#96; code block renderer</span>
-&#x2502;   &#x251C;&#x2500;&#x2500; commands/
-&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; ingest.ts          <span class="cm"># Structural ingestion + graph traversal</span>
-&#x2502;   &#x2502;   &#x251C;&#x2500;&#x2500; sync.ts            <span class="cm"># Pull identity + conclusions back, push peer card</span>
-&#x2502;   &#x2502;   &#x2514;&#x2500;&#x2500; search.ts          <span class="cm"># Semantic search modal</span>
-&#x2502;   &#x2514;&#x2500;&#x2500; utils/
-&#x2502;       &#x251C;&#x2500;&#x2500; chunker.ts         <span class="cm"># Heading/paragraph/sentence splitting</span>
-&#x2502;       &#x2514;&#x2500;&#x2500; frontmatter.ts     <span class="cm"># Honcho frontmatter read/write/filter</span>
-&#x2514;&#x2500;&#x2500; mcp/
-    &#x251C;&#x2500;&#x2500; package.json        <span class="cm"># MCP server dependencies</span>
-    &#x2514;&#x2500;&#x2500; server.ts           <span class="cm"># Standalone vault-aware MCP server</span></code></pre>
+&#x2514;&#x2500;&#x2500; src/
+    &#x251C;&#x2500;&#x2500; main.ts             <span class="cm"># Plugin lifecycle, 14 commands, vault events</span>
+    &#x251C;&#x2500;&#x2500; settings.ts         <span class="cm"># Settings interface + tab (debounced save)</span>
+    &#x251C;&#x2500;&#x2500; honcho-client.ts    <span class="cm"># Full REST client (streaming, dreams, sessions, search)</span>
+    &#x251C;&#x2500;&#x2500; views/
+    &#x2502;   &#x251C;&#x2500;&#x2500; sidebar-view.ts    <span class="cm"># Identity sidebar: card, rep, contextual rep, conclusion explorer, sync status</span>
+    &#x2502;   &#x251C;&#x2500;&#x2500; chat-modal.ts      <span class="cm"># Streaming dialectic chat (generic + contextual, save as note)</span>
+    &#x2502;   &#x251C;&#x2500;&#x2500; session-manager.ts <span class="cm"># Session list, queue status, re-ingest, delete (with confirmation)</span>
+    &#x2502;   &#x251C;&#x2500;&#x2500; stale-notes-modal.ts <span class="cm"># Stale notes list with individual + bulk re-ingest</span>
+    &#x2502;   &#x2514;&#x2500;&#x2500; post-processor.ts  <span class="cm"># &#96;honcho&#96; code block renderer</span>
+    &#x251C;&#x2500;&#x2500; commands/
+    &#x2502;   &#x251C;&#x2500;&#x2500; ingest.ts          <span class="cm"># Structural ingestion, graph traversal, batch partitioning</span>
+    &#x2502;   &#x251C;&#x2500;&#x2500; sync.ts            <span class="cm"># Pull identity + conclusions, push peer card, session summaries</span>
+    &#x2502;   &#x2514;&#x2500;&#x2500; search.ts          <span class="cm"># Semantic search modal (conclusions query)</span>
+    &#x2514;&#x2500;&#x2500; utils/
+        &#x251C;&#x2500;&#x2500; chunker.ts         <span class="cm"># Heading/paragraph/sentence splitting with hard-split fallback</span>
+        &#x251C;&#x2500;&#x2500; frontmatter.ts     <span class="cm"># Honcho frontmatter read/write/filter/tag normalization</span>
+        &#x251C;&#x2500;&#x2500; sync-status.ts     <span class="cm"># Content hashing (FNV-1a), sync status checks, stale detection</span>
+        &#x2514;&#x2500;&#x2500; sync-queue.ts      <span class="cm"># Priority-based auto-sync queue with debounce + batching</span></code></pre>
 </section>
 
 <!-- =============== CONFIGURATION =============== -->
@@ -981,7 +1001,7 @@ flowchart TD
         <tr><td><code>autoSync</code></td><td><code>false</code></td><td>Auto-ingest on save</td></tr>
         <tr><td><code>autoSyncTags</code></td><td><code>[]</code></td><td>Tag filter for auto-sync</td></tr>
         <tr><td><code>autoSyncFolders</code></td><td><code>[]</code></td><td>Folder filter for auto-sync</td></tr>
-        <tr><td><code>trackFrontmatter</code></td><td><code>true</code></td><td>Write sync metadata to notes</td></tr>
+        <tr><td><code>trackFrontmatter</code></td><td><code>true</code></td><td>Write sync metadata to notes (<code>honcho_synced</code>, <code>honcho_session_id</code>, <code>honcho_message_count</code>, <code>honcho_content_hash</code>)</td></tr>
       </tbody>
     </table>
   </div>
@@ -1004,6 +1024,7 @@ flowchart TD
         <tr><td>Schedule dream</td><td>Manual memory consolidation trigger</td></tr>
         <tr><td>Chat about this note</td><td>Contextual chat seeded with active note's title, tags, headings</td></tr>
         <tr><td>Push note as peer card</td><td>Parse bullet points from a note and PUT as peer card &mdash; direct identity authorship</td></tr>
+        <tr><td>Show stale notes</td><td>List ingested notes modified since last sync, with individual + bulk re-ingest</td></tr>
       </tbody>
     </table>
   </div>
@@ -1016,24 +1037,31 @@ flowchart TD
     <li class="done">Thin REST client with full Honcho v3 API coverage</li>
     <li class="done">Streaming SSE support for dialectic chat</li>
     <li class="done">Dream scheduling + queue status endpoints</li>
-    <li class="done">Session lifecycle management (list, delete, clone)</li>
+    <li class="done">Session lifecycle management (list, delete, clone, rename, vault-delete)</li>
     <li class="done">Structural context extraction (tags, links, backlinks, headings, folders, dates)</li>
     <li class="done">Graph-aware ingestion with configurable depth</li>
     <li class="done">Session metadata with full vault structural signals</li>
     <li class="done">Streaming chat modal with markdown rendering</li>
-    <li class="done">Session manager UI with queue progress</li>
-    <li class="done">MCP server with 8 vault-aware tools</li>
-    <li class="done">Auto-sync on save with tag/folder filters</li>
+    <li class="done">Session manager UI with queue progress + delete confirmation</li>
+    <li class="done">Auto-sync with priority-based sync queue (graph-centrality ordering, debounce, batching)</li>
+    <li class="done">Dynamic filtering: content hashing (FNV-1a), sync status checks, batch partitioning</li>
+    <li class="done">Stale notes detection + modal (individual and bulk re-ingest)</li>
+    <li class="done">Auto-ingest on file creation (within sync filter scope)</li>
     <li class="done">Bidirectional sync (vault &#x2194; Honcho)</li>
     <li class="done">Architecture documentation</li>
     <li class="done">Conclusion explorer with sort chips, text filter, pagination</li>
     <li class="done">Contextual representation (active note awareness via search_query)</li>
     <li class="done">Combined getPeerContext call (single API round-trip)</li>
-    <li class="done">Contextual chat modal (note title, tags, headings as context)</li>
+    <li class="done">Contextual chat modal (note title, tags, headings as context, session-scoped)</li>
     <li class="done">Peer card authorship (push note as peer card via setPeerCard PUT)</li>
     <li class="done">Nested Honcho tag mapping on sync-back (#honcho, #honcho/conclusions, #honcho/identity)</li>
     <li class="done"><code>honcho</code> code block processor (search, card, representation, conclusions in reading view)</li>
     <li class="done">Session summaries + session context client methods</li>
+    <li class="done">Semantic search modal (parallel conclusions + messages search)</li>
+    <li class="done">Sidebar inline search</li>
+    <li class="done">File menu integration (ingest, ingest + linked, chat, push peer card)</li>
+    <li class="done">Folder context menu (ingest folder)</li>
+    <li class="done">Debounced settings save (500ms)</li>
     <li class="todo">EditorSuggest integration (inline autocomplete from Honcho)</li>
     <li class="todo">Status bar sync indicator</li>
     <li class="todo">Bases views integration (1.10.0+)</li>
