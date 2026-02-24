@@ -6,8 +6,7 @@ import { ingestNote, createIngestContext } from "../commands/ingest";
 export class SessionManagerModal extends Modal {
 	private client: HonchoClient;
 	private workspaceId: string;
-	private observerPeerId: string;
-	private observedPeerId: string;
+	private peerId: string;
 	private bodyEl: HTMLElement | null = null;
 	private sessions: SessionResponse[] = [];
 	private currentPage = 1;
@@ -19,16 +18,14 @@ export class SessionManagerModal extends Modal {
 		app: App,
 		client: HonchoClient,
 		workspaceId: string,
-		observerPeerId: string,
-		observedPeerId: string,
+		peerId: string,
 		trackFrontmatter: boolean
 	) {
 		super(app);
 		this.pluginApp = app;
 		this.client = client;
 		this.workspaceId = workspaceId;
-		this.observerPeerId = observerPeerId;
-		this.observedPeerId = observedPeerId;
+		this.peerId = peerId;
 		this.trackFrontmatter = trackFrontmatter;
 	}
 
@@ -62,7 +59,7 @@ export class SessionManagerModal extends Modal {
 		try {
 			const status = await this.client.getQueueStatus(
 				this.workspaceId,
-				{ observer_id: this.observerPeerId }
+				{ observer_id: this.peerId }
 			);
 			statusBar.empty();
 			this.renderQueueStatus(statusBar, status);
@@ -246,8 +243,8 @@ export class SessionManagerModal extends Modal {
 			try {
 				await this.client.scheduleDream(
 					this.workspaceId,
-					this.observerPeerId,
-					{ observed: this.observedPeerId }
+					this.peerId,
+					{ observed: this.peerId }
 				);
 				new Notice("Dream scheduled");
 			} catch (err) {
@@ -268,8 +265,7 @@ export class SessionManagerModal extends Modal {
 				this.pluginApp,
 				this.client,
 				this.workspaceId,
-				this.observerPeerId,
-				this.observedPeerId,
+				this.peerId,
 				this.trackFrontmatter
 			);
 			const result = await ingestNote(ctx, file, { force: true });

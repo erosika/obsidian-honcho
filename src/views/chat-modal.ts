@@ -5,6 +5,12 @@ export interface NoteContext {
 	title: string;
 	tags: string[];
 	headings: string[];
+	folder?: string;
+	aliases?: string[];
+	outgoingLinks?: string[];
+	backlinks?: string[];
+	properties?: Record<string, unknown>;
+	contentExcerpt?: string;
 }
 
 interface ChatMessage {
@@ -134,9 +140,52 @@ export class HonchoChatModal extends Modal {
 		if (!this.noteContext) return undefined;
 		return [
 			this.noteContext.title,
+			...(this.noteContext.aliases ?? []),
 			...this.noteContext.tags,
 			...this.noteContext.headings.slice(0, 3),
 		].join(" ");
+	}
+
+	/**
+	 * Build a rich context prefix for the dialectic query.
+	 * Includes structural position, frontmatter properties,
+	 * and a content excerpt when available.
+	 */
+	private buildContextPrefix(): string {
+		const nc = this.noteContext!;
+		const parts: string[] = [`[Context: viewing "${nc.title}"`];
+
+		if (nc.folder) parts.push(`folder: ${nc.folder}`);
+		if (nc.aliases && nc.aliases.length > 0) parts.push(`aliases: ${nc.aliases.join(", ")}`);
+		if (nc.tags.length > 0) parts.push(`tags: ${nc.tags.join(", ")}`);
+		if (nc.outgoingLinks && nc.outgoingLinks.length > 0) {
+			parts.push(`links to: ${nc.outgoingLinks.slice(0, 10).join(", ")}`);
+		}
+		if (nc.backlinks && nc.backlinks.length > 0) {
+			parts.push(`referenced by: ${nc.backlinks.slice(0, 10).join(", ")}`);
+		}
+
+		// Custom properties
+		if (nc.properties) {
+			const propParts: string[] = [];
+			for (const [key, value] of Object.entries(nc.properties)) {
+				const formatted = Array.isArray(value) ? value.join(", ") : String(value);
+				propParts.push(`${key}: ${formatted}`);
+			}
+			if (propParts.length > 0) parts.push(propParts.join(", "));
+		}
+
+		if (nc.headings.length > 0) {
+			parts.push(`outline: ${nc.headings.slice(0, 6).join(" > ")}`);
+		}
+
+		let prefix = parts.join(", ") + "]\n\n";
+
+		if (nc.contentExcerpt) {
+			prefix += `[Excerpt: ${nc.contentExcerpt}]\n\n`;
+		}
+
+		return prefix;
 	}
 
 	private async sendMessage(): Promise<void> {
@@ -161,7 +210,7 @@ export class HonchoChatModal extends Modal {
 
 		// Build the actual query: if we have note context, prepend it
 		const contextualQuery = this.noteContext
-			? `[Context: viewing "${this.noteContext.title}"${this.noteContext.tags.length > 0 ? `, tags: ${this.noteContext.tags.join(", ")}` : ""}]\n\n${query}`
+			? this.buildContextPrefix() + query
 			: query;
 
 		// Create AbortController for this request

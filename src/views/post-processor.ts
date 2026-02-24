@@ -97,7 +97,7 @@ async function renderSearch(
 		return;
 	}
 
-	const results = await client.searchConclusions(workspaceId, query, {
+	const results = await client.queryConclusions(workspaceId, query, {
 		top_k: limit,
 		filters: { observer_id: peerId, observed_id: peerId },
 	});

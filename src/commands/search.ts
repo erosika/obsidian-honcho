@@ -85,7 +85,7 @@ export class HonchoSearchModal extends Modal {
 
 			const [conclusions, messages] = await Promise.all([
 				searchConclusions
-					? this.client.searchConclusions(this.workspaceId, query, {
+					? this.client.queryConclusions(this.workspaceId, query, {
 						top_k: 20,
 						filters: {
 							observer_id: this.peerId,

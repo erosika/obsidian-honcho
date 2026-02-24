@@ -7,12 +7,13 @@ export interface HonchoPluginSettings {
 	apiVersion: string;
 	workspaceName: string;
 	peerName: string;
-	observedPeerName: string;
 	autoSync: boolean;
 	autoSyncTags: string[];
 	autoSyncFolders: string[];
 	autoSyncDailyNotes: boolean;
+	minSyncInterval: number; // minutes
 	trackFrontmatter: boolean;
+	feedbackLoop: boolean;
 	linkDepth: number;
 }
 
@@ -21,13 +22,14 @@ export const DEFAULT_SETTINGS: HonchoPluginSettings = {
 	baseUrl: "https://api.honcho.dev",
 	apiVersion: "v3",
 	workspaceName: "",
-	peerName: "obsidian",
-	observedPeerName: "",
+	peerName: "",
 	autoSync: false,
 	autoSyncTags: [],
 	autoSyncFolders: [],
 	autoSyncDailyNotes: false,
+	minSyncInterval: 5,
 	trackFrontmatter: true,
+	feedbackLoop: false,
 	linkDepth: 1,
 };
 
@@ -129,27 +131,14 @@ export class HonchoSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Observer peer")
-			.setDesc("The peer that represents this vault. This is who sends messages when you ingest notes.")
+			.setName("Peer name")
+			.setDesc("Your identity in Honcho. Ingested content and conclusions are attributed to this peer.")
 			.addText((text) =>
 				text
-					.setPlaceholder("obsidian")
+					.setPlaceholder("your name")
 					.setValue(this.plugin.settings.peerName)
 					.onChange((value) => {
 						this.plugin.settings.peerName = value;
-						this.debouncedSave();
-					})
-			);
-
-		new Setting(containerEl)
-			.setName("Observed peer")
-			.setDesc("The peer being observed. Ingested content builds this peer's representation. Leave empty to observe self (observer = observed).")
-			.addText((text) =>
-				text
-					.setPlaceholder("Same as observer")
-					.setValue(this.plugin.settings.observedPeerName)
-					.onChange((value) => {
-						this.plugin.settings.observedPeerName = value;
 						this.debouncedSave();
 					})
 			);
@@ -183,6 +172,22 @@ export class HonchoSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				})
 			);
+
+		new Setting(containerEl)
+			.setName("Minimum sync interval")
+			.setDesc("Minimum time between re-syncs of the same note (minutes)")
+			.addDropdown((dd) => {
+				dd.addOption("1", "1 minute");
+				dd.addOption("2", "2 minutes");
+				dd.addOption("5", "5 minutes (default)");
+				dd.addOption("10", "10 minutes");
+				dd.addOption("30", "30 minutes");
+				dd.setValue(String(this.plugin.settings.minSyncInterval));
+				dd.onChange(async (value) => {
+					this.plugin.settings.minSyncInterval = parseInt(value, 10);
+					await this.plugin.saveSettings();
+				});
+			});
 
 		new Setting(containerEl)
 			.setName("Auto-sync tags")
@@ -238,6 +243,19 @@ export class HonchoSettingTab extends PluginSettingTab {
 			.addToggle((toggle) =>
 				toggle.setValue(this.plugin.settings.trackFrontmatter).onChange(async (value) => {
 					this.plugin.settings.trackFrontmatter = value;
+					await this.plugin.saveSettings();
+				})
+			);
+
+		// -- Experimental --
+		containerEl.createEl("h3", { text: "Experimental" });
+
+		new Setting(containerEl)
+			.setName("Write Honcho feedback into notes")
+			.setDesc("Append a ## Honcho section with conclusions to ingested notes. Manual command only -- no automatic triggers. Per-note override via honcho_feedback frontmatter.")
+			.addToggle((toggle) =>
+				toggle.setValue(this.plugin.settings.feedbackLoop).onChange(async (value) => {
+					this.plugin.settings.feedbackLoop = value;
 					await this.plugin.saveSettings();
 				})
 			);

@@ -1,5 +1,7 @@
 import { type App, type TFile } from "obsidian";
 import { countBacklinks } from "../commands/ingest";
+import { readHonchoFrontmatter } from "./frontmatter";
+import { stripForIngestion, computeContentHash } from "./sync-status";
 
 export type IngestHandler = (file: TFile) => Promise<void>;
 
@@ -10,44 +12,75 @@ interface QueueEntry {
 	retryCount: number;
 }
 
-const DEBOUNCE_MS = 5000;
+const DEBOUNCE_MS = 10_000;
 const BATCH_SIZE = 3;
 const NEW_FILE_BONUS = 50;
 const MAX_QUEUE_RETRIES = 2;
 const RETRY_PRIORITY_DECAY = 10;
+const DEFAULT_MIN_SYNC_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Priority-based auto-sync queue.
- * Replaces the naive per-file debounce timers with a centralized queue that:
- *   - Debounces internally (same 5s window per file)
- *   - Processes in priority order: backlink count + new-file bonus
- *   - Batches to avoid API hammering
- *   - Reschedules if entries remain after a flush
+ * Debounces internally (10s window per file), processes in priority order
+ * (backlink count + new-file bonus), batches to avoid API hammering,
+ * and enforces a minimum sync interval per file.
  */
 export class SyncQueue {
 	private pending = new Map<string, QueueEntry>();
 	private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	private flushTimer: ReturnType<typeof setTimeout> | null = null;
 	private processing = false;
+	private lastSyncedAt = new Map<string, number>();
 	private app: App;
 	private handler: IngestHandler;
+	private minSyncIntervalMs: number;
 
-	constructor(app: App, handler: IngestHandler) {
+	constructor(app: App, handler: IngestHandler, minSyncIntervalMs = DEFAULT_MIN_SYNC_INTERVAL_MS) {
 		this.app = app;
 		this.handler = handler;
+		this.minSyncIntervalMs = minSyncIntervalMs;
+	}
+
+	setMinSyncInterval(ms: number): void {
+		this.minSyncIntervalMs = ms;
 	}
 
 	enqueue(file: TFile): void {
+		// Skip if file was synced within the min interval
+		const lastSync = this.lastSyncedAt.get(file.path);
+		if (lastSync && Date.now() - lastSync < this.minSyncIntervalMs) {
+			return;
+		}
+
 		// Clear existing debounce for this file
 		const existing = this.debounceTimers.get(file.path);
 		if (existing) clearTimeout(existing);
 
 		const timer = setTimeout(() => {
 			this.debounceTimers.delete(file.path);
-			this.addToPending(file);
+			this.checkThenEnqueue(file);
 		}, DEBOUNCE_MS);
 
 		this.debounceTimers.set(file.path, timer);
+	}
+
+	/**
+	 * After debounce: check content hash before adding to pending.
+	 * This avoids API calls entirely for files whose body hasn't changed.
+	 */
+	private async checkThenEnqueue(file: TFile): Promise<void> {
+		try {
+			const fm = readHonchoFrontmatter(this.app, file);
+			if (fm.hash) {
+				const raw = await this.app.vault.cachedRead(file);
+				const body = stripForIngestion(raw);
+				const currentHash = computeContentHash(body);
+				if (currentHash === fm.hash) return; // unchanged
+			}
+		} catch {
+			// If check fails, enqueue anyway
+		}
+		this.addToPending(file);
 	}
 
 	private addToPending(file: TFile, retryCount = 0, priorityOverride?: number): void {
@@ -67,7 +100,7 @@ export class SyncQueue {
 		// New file bonus: files not yet synced get prioritized
 		const cache = this.app.metadataCache.getFileCache(file);
 		const fm = cache?.frontmatter;
-		if (!fm?.honcho_synced) {
+		if (!fm?.synced) {
 			priority += NEW_FILE_BONUS;
 		}
 
@@ -98,15 +131,12 @@ export class SyncQueue {
 				this.pending.delete(entry.file.path);
 			}
 
-			// Process batch concurrently
-			const results = await Promise.allSettled(
-				batch.map((entry) => this.handler(entry.file))
-			);
-
-			// Re-enqueue failures with decayed priority
-			for (let i = 0; i < results.length; i++) {
-				if (results[i].status === "rejected") {
-					const entry = batch[i];
+			// Process batch sequentially to avoid API rate limits
+			for (const entry of batch) {
+				try {
+					await this.handler(entry.file);
+					this.lastSyncedAt.set(entry.file.path, Date.now());
+				} catch {
 					const nextRetry = entry.retryCount + 1;
 					if (nextRetry <= MAX_QUEUE_RETRIES) {
 						this.addToPending(

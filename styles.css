@@ -46,29 +46,6 @@
 	font-size: var(--font-smallest);
 }
 
-.honcho-sidebar-search {
-	margin-bottom: var(--size-4-3);
-}
-
-.honcho-search-input {
-	width: 100%;
-	padding: var(--size-4-1) var(--size-4-2);
-	border: 1px solid var(--background-modifier-border);
-	border-radius: var(--radius-s);
-	background: var(--background-primary);
-	color: var(--text-normal);
-	font-size: var(--font-ui-small);
-}
-
-.honcho-search-input:focus {
-	border-color: var(--interactive-accent);
-	outline: none;
-}
-
-.honcho-sidebar-search-results {
-	margin-bottom: var(--size-4-3);
-}
-
 .honcho-section {
 	margin-bottom: var(--size-4-4);
 }
@@ -98,33 +75,6 @@
 	border-radius: var(--radius-s);
 	font-size: var(--font-ui-small);
 	line-height: 1.5;
-}
-
-.honcho-conclusions-list {
-	display: flex;
-	flex-direction: column;
-	gap: var(--size-4-1);
-	max-height: 300px;
-	overflow-y: auto;
-}
-
-.honcho-conclusion-item {
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
-	padding: var(--size-4-1) var(--size-4-2);
-	background: var(--background-secondary);
-	border-radius: var(--radius-s);
-	font-size: var(--font-ui-smaller);
-}
-
-.honcho-conclusion-date {
-	color: var(--text-faint);
-	font-size: var(--font-ui-smaller);
-}
-
-.honcho-conclusion-text {
-	color: var(--text-normal);
 }
 
 .honcho-sidebar-empty,
@@ -488,90 +438,6 @@
 .honcho-btn-dream:hover {
 	border-color: var(--interactive-accent);
 	color: var(--interactive-accent);
-}
-
-/* -- Conclusion Explorer ------------------------------------------------ */
-
-.honcho-filter-bar {
-	display: flex;
-	align-items: center;
-	gap: var(--size-4-2);
-	flex-wrap: wrap;
-	margin-bottom: var(--size-4-2);
-}
-
-.honcho-chip-group {
-	display: flex;
-	gap: var(--size-2-1);
-}
-
-.honcho-filter-chip {
-	font-size: var(--font-ui-smaller);
-	padding: 2px 10px;
-	border-radius: var(--radius-s);
-	cursor: pointer;
-	background: var(--background-secondary);
-	color: var(--text-muted);
-	border: 1px solid var(--background-modifier-border);
-	transition: all 0.15s ease;
-}
-
-.honcho-filter-chip:hover {
-	border-color: var(--interactive-accent);
-	color: var(--text-normal);
-}
-
-.honcho-filter-chip.active {
-	background: var(--interactive-accent);
-	color: var(--text-on-accent);
-	border-color: var(--interactive-accent);
-}
-
-.honcho-filter-input {
-	flex: 1;
-	min-width: 100px;
-	padding: 2px var(--size-4-2);
-	border: 1px solid var(--background-modifier-border);
-	border-radius: var(--radius-s);
-	background: var(--background-primary);
-	color: var(--text-normal);
-	font-size: var(--font-ui-smaller);
-}
-
-.honcho-filter-input:focus {
-	border-color: var(--interactive-accent);
-	outline: none;
-}
-
-.honcho-conclusion-count {
-	font-size: var(--font-ui-smaller);
-	color: var(--text-faint);
-	margin-bottom: var(--size-4-1);
-}
-
-.honcho-explorer-pagination {
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	gap: var(--size-4-2);
-	margin-top: var(--size-4-2);
-}
-
-/* -- Contextual Section ------------------------------------------------- */
-
-.honcho-contextual-section {
-	border-top: 1px solid var(--background-modifier-border);
-	padding-top: var(--size-4-3);
-}
-
-.honcho-contextual-section:empty {
-	display: none;
-}
-
-.honcho-context-label {
-	font-size: var(--font-ui-small);
-	color: var(--text-muted);
-	font-style: italic;
 }
 
 /* -- Chat Context Tags -------------------------------------------------- */
