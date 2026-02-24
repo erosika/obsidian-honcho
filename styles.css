@@ -13,69 +13,224 @@
 .honcho-sidebar-header {
 	display: flex;
 	align-items: center;
-	gap: var(--size-4-2);
-	flex-wrap: wrap;
-	margin-bottom: var(--size-4-3);
+	justify-content: space-between;
+	margin-bottom: var(--size-4-4);
+	padding-bottom: var(--size-4-2);
+	border-bottom: 1px solid var(--background-modifier-border);
 }
 
 .honcho-sidebar-header h3 {
 	margin: 0;
-	flex: 1;
+	font-size: var(--font-ui-medium);
+}
+
+.honcho-header-right {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
 }
 
 .honcho-status {
 	display: flex;
 	align-items: center;
-	gap: var(--size-4-1);
-	font-size: var(--font-smallest);
+	gap: var(--size-2-3);
+	font-size: var(--font-ui-smaller);
 }
 
 .honcho-dot-ok {
 	color: var(--text-success);
+	font-size: 8px;
 }
 
 .honcho-dot-err {
 	color: var(--text-error);
+	font-size: 8px;
 }
 
 .honcho-status-text {
-	color: var(--text-muted);
+	color: var(--text-faint);
 }
 
 .honcho-refresh-btn {
-	font-size: var(--font-smallest);
+	color: var(--text-faint);
+	padding: var(--size-2-2);
 }
+
+.honcho-refresh-btn:hover {
+	color: var(--text-normal);
+}
+
+/* -- Sections ----------------------------------------------------------- */
 
 .honcho-section {
 	margin-bottom: var(--size-4-4);
 }
 
-.honcho-section h4 {
-	margin: 0 0 var(--size-4-2) 0;
-	color: var(--text-muted);
-	font-size: var(--font-ui-small);
-	text-transform: uppercase;
-	letter-spacing: 0.05em;
+.honcho-section-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: var(--size-4-2);
 }
 
-.honcho-card-list {
-	padding-left: var(--size-4-4);
+.honcho-section h4,
+.honcho-section-header h4 {
 	margin: 0;
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	font-weight: var(--font-semibold);
+}
+
+/* -- Card groups -------------------------------------------------------- */
+
+.honcho-card-group {
+	padding-left: 0;
+}
+
+.honcho-card-group + .honcho-card-group {
+	margin-top: var(--size-4-2);
+}
+
+/* Group border accents */
+.honcho-group-general {
+	border-left: 2px solid var(--interactive-accent);
+	padding-left: var(--size-4-3);
+}
+
+.honcho-group-pattern {
+	border-left: 2px solid var(--text-faint);
+	padding-left: var(--size-4-3);
+}
+
+.honcho-group-trait {
+	border-left: 2px solid var(--text-success);
+	padding-left: var(--size-4-3);
+}
+
+.honcho-group-preference {
+	border-left: 2px solid var(--text-accent);
+	padding-left: var(--size-4-3);
+}
+
+/* Collapsible summary */
+.honcho-group-summary {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	cursor: pointer;
+	list-style: none;
+	user-select: none;
+	padding: var(--size-2-2) 0;
+}
+
+.honcho-group-summary::-webkit-details-marker {
+	display: none;
+}
+
+.honcho-group-summary::before {
+	content: "\25B8";
+	font-size: 10px;
+	color: var(--text-faint);
+	transition: transform 0.15s ease;
+	flex-shrink: 0;
+}
+
+details[open] > .honcho-group-summary::before {
+	transform: rotate(90deg);
+}
+
+.honcho-group-summary h4 {
+	margin: 0;
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	font-weight: var(--font-semibold);
+}
+
+.honcho-group-count {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	background: var(--background-secondary);
+	padding: 0 6px;
+	border-radius: var(--radius-s);
+	line-height: 1.6;
+}
+
+/* Card list items */
+.honcho-card-list {
+	padding-left: var(--size-4-3);
+	margin: var(--size-4-1) 0 0 0;
+	list-style: none;
 }
 
 .honcho-card-list li {
 	margin-bottom: var(--size-4-1);
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	line-height: 1.5;
+	position: relative;
+	padding-left: var(--size-4-2);
+}
+
+.honcho-card-list li::before {
+	content: "\00B7";
+	position: absolute;
+	left: 0;
+	color: var(--text-faint);
+}
+
+/* General (identity) items are brighter */
+.honcho-group-general .honcho-card-list li {
 	color: var(--text-normal);
+}
+
+/* -- Representation ----------------------------------------------------- */
+
+.honcho-representation {
+	padding: var(--size-4-3);
+	background: var(--background-secondary);
+	border-radius: var(--radius-s);
+	border: 1px solid var(--background-modifier-border);
+	font-size: var(--font-ui-small);
+	line-height: 1.6;
+}
+
+.honcho-representation p:first-child {
+	margin-top: 0;
+}
+
+.honcho-representation p:last-child {
+	margin-bottom: 0;
+}
+
+.honcho-representation h1,
+.honcho-representation h2,
+.honcho-representation h3 {
+	font-size: var(--font-ui-small);
+	font-weight: var(--font-semibold);
+	color: var(--text-normal);
+	margin-top: var(--size-4-2);
+	margin-bottom: var(--size-4-1);
+}
+
+/* -- Sync status -------------------------------------------------------- */
+
+.honcho-sync-status-section {
+	padding-bottom: var(--size-4-3);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.honcho-sync-status-body {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
 	font-size: var(--font-ui-small);
 }
 
-.honcho-representation {
-	padding: var(--size-4-2);
-	background: var(--background-secondary);
-	border-radius: var(--radius-s);
-	font-size: var(--font-ui-small);
-	line-height: 1.5;
-}
+/* -- Shared ------------------------------------------------------------- */
 
 .honcho-sidebar-empty,
 .honcho-loading {
