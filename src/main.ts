@@ -325,7 +325,7 @@ export default class HonchoPlugin extends Plugin {
 			saveGlobalConfig({
 				apiKey: this.settings.apiKey,
 				peerName: this.settings.peerName,
-				workspace: this.settings.workspaceName || this.app.vault.getName(),
+				workspace: this.getWorkspaceId(),
 				baseUrl: this.settings.baseUrl,
 			});
 		}
@@ -346,7 +346,7 @@ export default class HonchoPlugin extends Plugin {
 			saveGlobalConfig({
 				apiKey: this.settings.apiKey,
 				peerName: this.settings.peerName,
-				workspace: this.settings.workspaceName || this.app.vault.getName(),
+				workspace: this.getWorkspaceId(),
 				baseUrl: this.settings.baseUrl,
 			});
 		}
@@ -370,7 +370,7 @@ export default class HonchoPlugin extends Plugin {
 	}
 
 	getWorkspaceId(): string {
-		return this.settings.workspaceName || this.app.vault.getName();
+		return this.settings.workspaceName || "obsidian";
 	}
 
 	getPeerId(): string {
