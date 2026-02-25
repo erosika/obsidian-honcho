@@ -9,7 +9,7 @@ import { HonchoSearchModal } from "./commands/search";
 import { createIngestContext, ingestNote, ingestFolder, ingestByTag, ingestLinked } from "./commands/ingest";
 import { createSyncContext, generateIdentityNote, pullConclusions, pushPeerCardFromNote } from "./commands/sync";
 import type { NoteContext } from "./views/chat-modal";
-import { matchesSyncFilters, normalizeFrontmatterTags, readHonchoFrontmatter } from "./utils/frontmatter";
+import { matchesSyncFilters } from "./utils/frontmatter";
 import { registerHonchoCodeBlock } from "./views/post-processor";
 import { SyncQueue } from "./utils/sync-queue";
 
@@ -206,45 +206,6 @@ export default class HonchoPlugin extends Plugin {
 				this.syncQueue?.enqueue(file);
 			})
 		);
-
-		// -- Auto-ingest on file creation --
-		this.registerEvent(
-			this.app.vault.on("create", (file) => {
-				if (
-					!this.settings.autoSync ||
-					!(file instanceof TFile) ||
-					file.extension !== "md"
-				) {
-					return;
-				}
-				if (!matchesSyncFilters(
-					this.app,
-					file,
-					this.settings.autoSyncTags,
-					this.settings.autoSyncFolders
-				)) {
-					return;
-				}
-
-				this.syncQueue?.enqueue(file);
-			})
-		);
-
-		// -- Session lifecycle: rename --
-		this.registerEvent(
-			this.app.vault.on("rename", (file, oldPath) => {
-				if (!(file instanceof TFile) || file.extension !== "md") return;
-				this.handleFileRename(file, oldPath);
-			})
-		);
-
-		// -- Session lifecycle: delete --
-		this.registerEvent(
-			this.app.vault.on("delete", (file) => {
-				if (!(file instanceof TFile) || file.extension !== "md") return;
-				this.handleFileDelete(file.path);
-			})
-		);
 	}
 
 	onunload(): void {
@@ -388,11 +349,7 @@ export default class HonchoPlugin extends Plugin {
 			const ctx = createIngestContext(
 				this.app, client, workspaceId, peerId, observedPeerId, this.settings.trackFrontmatter
 			);
-			const progressNotice = new Notice(`${folder.name}: scanning...`, 0);
-			const result = await ingestFolder(ctx, folder, (done, total) => {
-				progressNotice.setMessage(`${folder.name}: ${done}/${total} ingested...`);
-			});
-			progressNotice.hide();
+			const result = await ingestFolder(ctx, folder);
 			const { counts } = result;
 			const parts: string[] = [];
 			if (counts.new > 0) parts.push(`${counts.new} new`);
@@ -447,7 +404,7 @@ export default class HonchoPlugin extends Plugin {
 			for (const t of cache.tags ?? []) {
 				tagSet.add(t.tag);
 			}
-			for (const t of normalizeFrontmatterTags(cache.frontmatter?.tags)) {
+			for (const t of (cache.frontmatter?.tags as string[]) ?? []) {
 				tagSet.add(t.startsWith("#") ? t : "#" + t);
 			}
 		}
@@ -487,11 +444,7 @@ export default class HonchoPlugin extends Plugin {
 				const ctx = createIngestContext(
 					this.app, client, workspaceId, peerId, observedPeerId, this.settings.trackFrontmatter
 				);
-				const progressNotice = new Notice(`${tag}: scanning...`, 0);
-				const result = await ingestByTag(ctx, tag, (done, total) => {
-					progressNotice.setMessage(`${tag}: ${done}/${total} ingested...`);
-				});
-				progressNotice.hide();
+				const result = await ingestByTag(ctx, tag);
 				const { counts } = result;
 				const parts: string[] = [];
 				if (counts.new > 0) parts.push(`${counts.new} new`);
@@ -539,9 +492,7 @@ export default class HonchoPlugin extends Plugin {
 				tags: (cache?.tags ?? []).map((t) => t.tag),
 				headings: (cache?.headings ?? []).map((h) => h.heading),
 			};
-			// Pass session ID if the note has been ingested, grounding chat in its content
-			const fm = readHonchoFrontmatter(this.app, file);
-			new HonchoChatModal(this.app, client, workspaceId, observedPeerId, noteContext, fm.honcho_session_id).open();
+			new HonchoChatModal(this.app, client, workspaceId, observedPeerId, noteContext).open();
 		} catch (err) {
 			new Notice(`${err instanceof Error ? err.message : String(err)}`);
 		}
@@ -634,64 +585,6 @@ export default class HonchoPlugin extends Plugin {
 			this.app.workspace.getLeaf().openFile(file);
 		} catch (err) {
 			new Notice(`Failed: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
-
-	// -----------------------------------------------------------------------
-	// Session lifecycle (rename / delete)
-	// -----------------------------------------------------------------------
-
-	private async handleFileRename(file: TFile, oldPath: string): Promise<void> {
-		try {
-			const { client, workspaceId } = await this.ensureInitialized();
-			const oldSessionId = `obsidian:file:${oldPath}`;
-
-			// Try to find the old session and update its metadata
-			const sessions = await client.listSessions(workspaceId, {
-				source: "obsidian",
-				file_path: oldPath,
-			}, 1, 1);
-
-			if (sessions.items.length > 0) {
-				const session = sessions.items[0];
-				await client.updateSession(workspaceId, session.id, {
-					metadata: {
-						...session.metadata,
-						file_path: file.path,
-						file_name: file.basename,
-						folder: file.parent?.path ?? "/",
-						renamed_from: oldPath,
-						renamed_at: new Date().toISOString(),
-					},
-				});
-			}
-		} catch {
-			// Best-effort: don't disrupt the user's rename operation
-		}
-	}
-
-	private async handleFileDelete(filePath: string): Promise<void> {
-		try {
-			const { client, workspaceId } = await this.ensureInitialized();
-
-			const sessions = await client.listSessions(workspaceId, {
-				source: "obsidian",
-				file_path: filePath,
-			}, 1, 1);
-
-			if (sessions.items.length > 0) {
-				const session = sessions.items[0];
-				// Mark as inactive rather than deleting -- preserves derived conclusions
-				await client.updateSession(workspaceId, session.id, {
-					metadata: {
-						...session.metadata,
-						deleted_from_vault: true,
-						deleted_at: new Date().toISOString(),
-					},
-				});
-			}
-		} catch {
-			// Best-effort: don't disrupt the user's delete operation
 		}
 	}
 }

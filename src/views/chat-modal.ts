@@ -17,7 +17,6 @@ export class HonchoChatModal extends Modal {
 	private workspaceId: string;
 	private peerId: string;
 	private noteContext: NoteContext | null;
-	private sessionId: string | undefined;
 	private messages: ChatMessage[] = [];
 	private reasoningLevel: ReasoningLevel = "medium";
 	private chatEl: HTMLElement | null = null;
@@ -29,15 +28,13 @@ export class HonchoChatModal extends Modal {
 		client: HonchoClient,
 		workspaceId: string,
 		peerId: string,
-		noteContext?: NoteContext,
-		sessionId?: string
+		noteContext?: NoteContext
 	) {
 		super(app);
 		this.client = client;
 		this.workspaceId = workspaceId;
 		this.peerId = peerId;
 		this.noteContext = noteContext ?? null;
-		this.sessionId = sessionId;
 	}
 
 	onOpen(): void {
@@ -160,7 +157,7 @@ export class HonchoChatModal extends Modal {
 				this.workspaceId,
 				this.peerId,
 				contextualQuery,
-				{ reasoning_level: this.reasoningLevel, session_id: this.sessionId }
+				{ reasoning_level: this.reasoningLevel }
 			);
 
 			for await (const event of stream) {
@@ -186,7 +183,7 @@ export class HonchoChatModal extends Modal {
 						this.workspaceId,
 						this.peerId,
 						contextualQuery,
-						{ reasoning_level: this.reasoningLevel, session_id: this.sessionId }
+						{ reasoning_level: this.reasoningLevel }
 					);
 					accumulated = resp.content ?? "No response.";
 				} catch (fallbackErr) {

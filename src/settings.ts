@@ -31,19 +31,10 @@ export const DEFAULT_SETTINGS: HonchoPluginSettings = {
 
 export class HonchoSettingTab extends PluginSettingTab {
 	plugin: HonchoPlugin;
-	private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 	constructor(app: App, plugin: HonchoPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
-	}
-
-	private debouncedSave(): void {
-		if (this.saveTimer) clearTimeout(this.saveTimer);
-		this.saveTimer = setTimeout(async () => {
-			this.saveTimer = null;
-			await this.plugin.saveSettings();
-		}, 500);
 	}
 
 	display(): void {
@@ -64,9 +55,9 @@ export class HonchoSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("Enter your API key")
 					.setValue(this.plugin.settings.apiKey)
-					.onChange((value) => {
+					.onChange(async (value) => {
 						this.plugin.settings.apiKey = value;
-						this.debouncedSave();
+						await this.plugin.saveSettings();
 					});
 			});
 
@@ -77,9 +68,9 @@ export class HonchoSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("https://api.honcho.dev")
 					.setValue(this.plugin.settings.baseUrl)
-					.onChange((value) => {
+					.onChange(async (value) => {
 						this.plugin.settings.baseUrl = value;
-						this.debouncedSave();
+						await this.plugin.saveSettings();
 					})
 			);
 
@@ -89,9 +80,9 @@ export class HonchoSettingTab extends PluginSettingTab {
 			.addText((text) =>
 				text
 					.setValue(this.plugin.settings.apiVersion)
-					.onChange((value) => {
+					.onChange(async (value) => {
 						this.plugin.settings.apiVersion = value;
-						this.debouncedSave();
+						await this.plugin.saveSettings();
 					})
 			);
 
@@ -120,9 +111,9 @@ export class HonchoSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder(this.app.vault.getName())
 					.setValue(this.plugin.settings.workspaceName)
-					.onChange((value) => {
+					.onChange(async (value) => {
 						this.plugin.settings.workspaceName = value;
-						this.debouncedSave();
+						await this.plugin.saveSettings();
 					})
 			);
 
@@ -133,9 +124,9 @@ export class HonchoSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("obsidian")
 					.setValue(this.plugin.settings.peerName)
-					.onChange((value) => {
+					.onChange(async (value) => {
 						this.plugin.settings.peerName = value;
-						this.debouncedSave();
+						await this.plugin.saveSettings();
 					})
 			);
 
@@ -146,9 +137,9 @@ export class HonchoSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("Same as observer")
 					.setValue(this.plugin.settings.observedPeerName)
-					.onChange((value) => {
+					.onChange(async (value) => {
 						this.plugin.settings.observedPeerName = value;
-						this.debouncedSave();
+						await this.plugin.saveSettings();
 					})
 			);
 
@@ -189,12 +180,12 @@ export class HonchoSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("#honcho, #identity")
 					.setValue(this.plugin.settings.autoSyncTags.join(", "))
-					.onChange((value) => {
+					.onChange(async (value) => {
 						this.plugin.settings.autoSyncTags = value
 							.split(",")
 							.map((t) => t.trim())
 							.filter((t) => t.length > 0);
-						this.debouncedSave();
+						await this.plugin.saveSettings();
 					})
 			);
 
@@ -205,12 +196,12 @@ export class HonchoSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("identity, notes/honcho")
 					.setValue(this.plugin.settings.autoSyncFolders.join(", "))
-					.onChange((value) => {
+					.onChange(async (value) => {
 						this.plugin.settings.autoSyncFolders = value
 							.split(",")
 							.map((f) => f.trim())
 							.filter((f) => f.length > 0);
-						this.debouncedSave();
+						await this.plugin.saveSettings();
 					})
 			);
 

@@ -22,14 +22,6 @@ export class HonchoSidebarView extends ItemView {
 	private activeNoteRef: EventRef | null = null;
 	private activeFile: TFile | null = null;
 
-	// Stale notes cache (30s TTL)
-	private staleCountCache: { count: number; ts: number } | null = null;
-	private static readonly STALE_CACHE_TTL = 30_000;
-
-	// Contextual representation debounce
-	private contextualRequestId = 0;
-	private contextualDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-
 	constructor(leaf: WorkspaceLeaf, plugin: HonchoPlugin) {
 		super(leaf);
 		this.plugin = plugin;
@@ -54,16 +46,12 @@ export class HonchoSidebarView extends ItemView {
 
 		this.containerDiv = container;
 
-		// Track active file changes for contextual representation (debounced)
+		// Track active file changes for contextual representation
 		this.activeNoteRef = this.app.workspace.on("active-leaf-change", () => {
 			const file = this.app.workspace.getActiveFile();
 			if (file !== this.activeFile) {
 				this.activeFile = file;
-				if (this.contextualDebounceTimer) clearTimeout(this.contextualDebounceTimer);
-				this.contextualDebounceTimer = setTimeout(() => {
-					this.contextualDebounceTimer = null;
-					this.updateContextualSection();
-				}, 300);
+				this.updateContextualSection();
 			}
 		});
 		this.activeFile = this.app.workspace.getActiveFile();
@@ -75,10 +63,6 @@ export class HonchoSidebarView extends ItemView {
 		if (this.activeNoteRef) {
 			this.app.workspace.offref(this.activeNoteRef);
 			this.activeNoteRef = null;
-		}
-		if (this.contextualDebounceTimer) {
-			clearTimeout(this.contextualDebounceTimer);
-			this.contextualDebounceTimer = null;
 		}
 	}
 
@@ -393,25 +377,18 @@ export class HonchoSidebarView extends ItemView {
 		const section = parent.createDiv({ cls: "honcho-section honcho-sync-status-section" });
 		section.createEl("h4", { text: "Sync Status" });
 		const statusEl = section.createDiv({ cls: "honcho-sync-status-body" });
+		statusEl.createSpan({ text: "Checking...", cls: "honcho-loading" });
 
 		try {
-			// Use cached count if fresh enough
-			let count: number;
-			if (this.staleCountCache && Date.now() - this.staleCountCache.ts < HonchoSidebarView.STALE_CACHE_TTL) {
-				count = this.staleCountCache.count;
-			} else {
-				statusEl.createSpan({ text: "Checking...", cls: "honcho-loading" });
-				const stale = await findStaleNotes(this.app);
-				count = stale.length;
-				this.staleCountCache = { count, ts: Date.now() };
-				statusEl.empty();
-			}
+			const stale = await findStaleNotes(this.app);
 
-			if (count === 0) {
+			statusEl.empty();
+
+			if (stale.length === 0) {
 				statusEl.createSpan({ text: "All notes up to date", cls: "honcho-text-muted" });
 			} else {
 				statusEl.createSpan({
-					text: `${count} stale note${count !== 1 ? "s" : ""}`,
+					text: `${stale.length} stale note${stale.length !== 1 ? "s" : ""}`,
 					cls: "honcho-text-accent",
 				});
 
@@ -420,7 +397,6 @@ export class HonchoSidebarView extends ItemView {
 					cls: "honcho-btn-small",
 				});
 				btn.addEventListener("click", () => {
-					this.staleCountCache = null; // invalidate on user action
 					this.app.commands.executeCommandById("honcho:show-stale-notes");
 				});
 			}
@@ -445,9 +421,6 @@ export class HonchoSidebarView extends ItemView {
 		const client = this.plugin.getClient();
 		if (!client) return;
 
-		// Increment request ID to discard stale responses
-		const requestId = ++this.contextualRequestId;
-
 		const workspaceId = this.plugin.getWorkspaceId();
 		const peerId = this.plugin.getPeerId();
 
@@ -467,9 +440,6 @@ export class HonchoSidebarView extends ItemView {
 				search_top_k: 10,
 			});
 
-			// Discard if a newer request has been issued
-			if (requestId !== this.contextualRequestId) return;
-
 			contextLabel.remove();
 
 			if (rep.representation) {
@@ -488,7 +458,6 @@ export class HonchoSidebarView extends ItemView {
 				});
 			}
 		} catch {
-			if (requestId !== this.contextualRequestId) return;
 			contextLabel.setText("Could not load contextual representation.");
 			contextLabel.addClass("honcho-error");
 		}

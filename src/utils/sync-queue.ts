@@ -62,8 +62,8 @@ export class SyncQueue {
 		// Backlink count as graph centrality proxy
 		const resolved = this.app.metadataCache.resolvedLinks;
 		if (resolved) {
-			for (const sourcePath in resolved) {
-				if (resolved[sourcePath]?.[file.path]) {
+			for (const targets of Object.values(resolved)) {
+				if (file.path in (targets as Record<string, number>)) {
 					priority++;
 				}
 			}
