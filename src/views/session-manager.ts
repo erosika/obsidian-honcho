@@ -272,21 +272,63 @@ export class SessionManagerModal extends Modal {
 				this.observedPeerId,
 				this.trackFrontmatter
 			);
-			const created = await ingestNote(ctx, file);
-			new Notice(`Re-ingested ${file.basename}: ${created.length} messages`);
+			const result = await ingestNote(ctx, file, { force: true });
+			const n = result.messages.length;
+			new Notice(`Re-ingested ${file.basename}: ${n} message${n !== 1 ? "s" : ""}`);
 			await this.loadSessions();
 		} catch (err) {
 			new Notice(`Re-ingest failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
 
-	private async deleteSession(sessionId: string, name: string): Promise<void> {
-		try {
-			await this.client.deleteSession(this.workspaceId, sessionId);
-			new Notice(`Deleted session: ${name}`);
-			await this.loadSessions();
-		} catch (err) {
-			new Notice(`Delete failed: ${err instanceof Error ? err.message : String(err)}`);
-		}
+	private deleteSession(sessionId: string, name: string): void {
+		const confirm = new ConfirmModal(
+			this.pluginApp,
+			`Delete session "${name}"? This cannot be undone.`,
+			async () => {
+				try {
+					await this.client.deleteSession(this.workspaceId, sessionId);
+					new Notice(`Deleted session: ${name}`);
+					await this.loadSessions();
+				} catch (err) {
+					new Notice(`Delete failed: ${err instanceof Error ? err.message : String(err)}`);
+				}
+			}
+		);
+		confirm.open();
+	}
+}
+
+class ConfirmModal extends Modal {
+	private message: string;
+	private onConfirm: () => void;
+
+	constructor(app: App, message: string, onConfirm: () => void) {
+		super(app);
+		this.message = message;
+		this.onConfirm = onConfirm;
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.createEl("p", { text: this.message });
+
+		const btnRow = contentEl.createDiv({ cls: "honcho-confirm-actions" });
+		const cancelBtn = btnRow.createEl("button", { text: "Cancel", cls: "honcho-btn-small" });
+		cancelBtn.addEventListener("click", () => this.close());
+
+		const confirmBtn = btnRow.createEl("button", {
+			text: "Delete",
+			cls: "honcho-btn-small honcho-btn-danger",
+		});
+		confirmBtn.addEventListener("click", () => {
+			this.close();
+			this.onConfirm();
+		});
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
 	}
 }

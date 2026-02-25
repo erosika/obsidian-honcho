@@ -128,6 +128,18 @@ export interface SessionContextResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Retry
+// ---------------------------------------------------------------------------
+
+const MAX_RETRIES = 3;
+const RETRY_BASE_MS = 500;
+const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
 
@@ -179,15 +191,43 @@ export class HonchoClient {
 			body: body ? JSON.stringify(body) : undefined,
 		};
 
-		const resp: RequestUrlResponse = await requestUrl(req);
+		let lastError: Error | undefined;
 
-		if (resp.status >= 400) {
-			throw new Error(
-				`Honcho API error ${resp.status}: ${resp.text}`
-			);
+		for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+			try {
+				const resp: RequestUrlResponse = await requestUrl(req);
+
+				if (resp.status >= 400) {
+					const err = new Error(
+						`Honcho API error ${resp.status}: ${resp.text}`
+					);
+					// Non-retryable client errors -- fail immediately
+					if (!RETRYABLE_STATUSES.has(resp.status)) {
+						throw err;
+					}
+					lastError = err;
+				} else {
+					return resp.json as T;
+				}
+			} catch (err) {
+				if (err instanceof Error && err.message.startsWith("Honcho API error")) {
+					// Already classified above -- re-check if it was non-retryable
+					if (!RETRYABLE_STATUSES.has(parseInt(err.message.match(/\d+/)?.[0] ?? "0"))) {
+						throw err;
+					}
+					lastError = err;
+				} else {
+					// Network-level error (no response) -- always retry
+					lastError = err instanceof Error ? err : new Error(String(err));
+				}
+			}
+
+			if (attempt < MAX_RETRIES) {
+				await sleep(RETRY_BASE_MS * Math.pow(2, attempt));
+			}
 		}
 
-		return resp.json as T;
+		throw lastError ?? new Error("Request failed after retries");
 	}
 
 	private post<T>(path: string, body?: unknown, query?: Record<string, string | number | undefined>): Promise<T> {
@@ -317,7 +357,8 @@ export class HonchoClient {
 			reasoning_level?: ReasoningLevel;
 			target?: string;
 			session_id?: string;
-		}
+		},
+		signal?: AbortSignal
 	): AsyncGenerator<StreamChatEvent> {
 		const url = this.url(`/workspaces/${workspaceId}/peers/${peerId}/chat`);
 		const body = JSON.stringify({
@@ -334,6 +375,7 @@ export class HonchoClient {
 				Accept: "text/event-stream",
 			},
 			body,
+			signal,
 		});
 
 		if (!resp.ok) {

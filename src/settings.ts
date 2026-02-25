@@ -11,6 +11,7 @@ export interface HonchoPluginSettings {
 	autoSync: boolean;
 	autoSyncTags: string[];
 	autoSyncFolders: string[];
+	autoSyncDailyNotes: boolean;
 	trackFrontmatter: boolean;
 	linkDepth: number;
 }
@@ -25,16 +26,26 @@ export const DEFAULT_SETTINGS: HonchoPluginSettings = {
 	autoSync: false,
 	autoSyncTags: [],
 	autoSyncFolders: [],
+	autoSyncDailyNotes: false,
 	trackFrontmatter: true,
 	linkDepth: 1,
 };
 
 export class HonchoSettingTab extends PluginSettingTab {
 	plugin: HonchoPlugin;
+	private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 	constructor(app: App, plugin: HonchoPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
+	}
+
+	private debouncedSave(): void {
+		if (this.saveTimer) clearTimeout(this.saveTimer);
+		this.saveTimer = setTimeout(async () => {
+			this.saveTimer = null;
+			await this.plugin.saveSettings();
+		}, 500);
 	}
 
 	display(): void {
@@ -55,9 +66,9 @@ export class HonchoSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("Enter your API key")
 					.setValue(this.plugin.settings.apiKey)
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.apiKey = value;
-						await this.plugin.saveSettings();
+						this.debouncedSave();
 					});
 			});
 
@@ -68,9 +79,9 @@ export class HonchoSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("https://api.honcho.dev")
 					.setValue(this.plugin.settings.baseUrl)
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.baseUrl = value;
-						await this.plugin.saveSettings();
+						this.debouncedSave();
 					})
 			);
 
@@ -80,9 +91,9 @@ export class HonchoSettingTab extends PluginSettingTab {
 			.addText((text) =>
 				text
 					.setValue(this.plugin.settings.apiVersion)
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.apiVersion = value;
-						await this.plugin.saveSettings();
+						this.debouncedSave();
 					})
 			);
 
@@ -111,9 +122,9 @@ export class HonchoSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder(this.app.vault.getName())
 					.setValue(this.plugin.settings.workspaceName)
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.workspaceName = value;
-						await this.plugin.saveSettings();
+						this.debouncedSave();
 					})
 			);
 
@@ -124,9 +135,9 @@ export class HonchoSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("obsidian")
 					.setValue(this.plugin.settings.peerName)
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.peerName = value;
-						await this.plugin.saveSettings();
+						this.debouncedSave();
 					})
 			);
 
@@ -137,9 +148,9 @@ export class HonchoSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("Same as observer")
 					.setValue(this.plugin.settings.observedPeerName)
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.observedPeerName = value;
-						await this.plugin.saveSettings();
+						this.debouncedSave();
 					})
 			);
 
@@ -180,12 +191,12 @@ export class HonchoSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("#honcho, #identity")
 					.setValue(this.plugin.settings.autoSyncTags.join(", "))
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.autoSyncTags = value
 							.split(",")
 							.map((t) => t.trim())
 							.filter((t) => t.length > 0);
-						await this.plugin.saveSettings();
+						this.debouncedSave();
 					})
 			);
 
@@ -196,13 +207,26 @@ export class HonchoSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("identity, notes/honcho")
 					.setValue(this.plugin.settings.autoSyncFolders.join(", "))
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.autoSyncFolders = value
 							.split(",")
 							.map((f) => f.trim())
 							.filter((f) => f.length > 0);
-						await this.plugin.saveSettings();
+						this.debouncedSave();
 					})
+			);
+
+		// -- Daily Notes --
+		containerEl.createEl("h3", { text: "Daily Notes" });
+
+		new Setting(containerEl)
+			.setName("Auto-sync daily notes")
+			.setDesc("Automatically sync daily notes to Honcho when opened")
+			.addToggle((toggle) =>
+				toggle.setValue(this.plugin.settings.autoSyncDailyNotes).onChange(async (value) => {
+					this.plugin.settings.autoSyncDailyNotes = value;
+					await this.plugin.saveSettings();
+				})
 			);
 
 		// -- Frontmatter --

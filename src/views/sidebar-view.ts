@@ -1,6 +1,6 @@
 import { ItemView, MarkdownRenderer, TFile, type EventRef, type WorkspaceLeaf } from "obsidian";
 import type HonchoPlugin from "../main";
-import type { ConclusionResponse } from "../honcho-client";
+import type { ConclusionResponse, MessageResponse } from "../honcho-client";
 import { findStaleNotes } from "../utils/sync-status";
 
 export const HONCHO_VIEW_TYPE = "honcho-sidebar";
@@ -21,6 +21,18 @@ export class HonchoSidebarView extends ItemView {
 	// Active note tracking
 	private activeNoteRef: EventRef | null = null;
 	private activeFile: TFile | null = null;
+
+	// Stale notes cache (30s TTL)
+	private staleCountCache: { count: number; ts: number } | null = null;
+	private static readonly STALE_CACHE_TTL = 30_000;
+
+	// Connection status cache (60s TTL)
+	private connectionCache: { ok: boolean; ts: number } | null = null;
+	private static readonly CONN_CACHE_TTL = 60_000;
+
+	// Contextual representation debounce
+	private contextualRequestId = 0;
+	private contextualDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: HonchoPlugin) {
 		super(leaf);
@@ -46,12 +58,16 @@ export class HonchoSidebarView extends ItemView {
 
 		this.containerDiv = container;
 
-		// Track active file changes for contextual representation
+		// Track active file changes for contextual representation (debounced)
 		this.activeNoteRef = this.app.workspace.on("active-leaf-change", () => {
 			const file = this.app.workspace.getActiveFile();
 			if (file !== this.activeFile) {
 				this.activeFile = file;
-				this.updateContextualSection();
+				if (this.contextualDebounceTimer) clearTimeout(this.contextualDebounceTimer);
+				this.contextualDebounceTimer = setTimeout(() => {
+					this.contextualDebounceTimer = null;
+					this.updateContextualSection();
+				}, 300);
 			}
 		});
 		this.activeFile = this.app.workspace.getActiveFile();
@@ -63,6 +79,10 @@ export class HonchoSidebarView extends ItemView {
 		if (this.activeNoteRef) {
 			this.app.workspace.offref(this.activeNoteRef);
 			this.activeNoteRef = null;
+		}
+		if (this.contextualDebounceTimer) {
+			clearTimeout(this.contextualDebounceTimer);
+			this.contextualDebounceTimer = null;
 		}
 	}
 
@@ -93,7 +113,11 @@ export class HonchoSidebarView extends ItemView {
 			text: "Refresh",
 			cls: "honcho-refresh-btn",
 		});
-		refreshBtn.addEventListener("click", () => this.render());
+		refreshBtn.addEventListener("click", () => {
+			this.connectionCache = null; // invalidate on explicit refresh
+			this.staleCountCache = null;
+			this.render();
+		});
 
 		// Search bar
 		const searchBar = el.createDiv({ cls: "honcho-sidebar-search" });
@@ -117,8 +141,14 @@ export class HonchoSidebarView extends ItemView {
 			const workspaceId = this.plugin.getWorkspaceId();
 			const peerId = this.plugin.getPeerId();
 
-			// Test connection
-			const ok = await client.testConnection();
+			// Test connection (cached)
+			let ok: boolean;
+			if (this.connectionCache && Date.now() - this.connectionCache.ts < HonchoSidebarView.CONN_CACHE_TTL) {
+				ok = this.connectionCache.ok;
+			} else {
+				ok = await client.testConnection();
+				this.connectionCache = { ok, ts: Date.now() };
+			}
 			statusEl.empty();
 			const dot = statusEl.createSpan({ cls: ok ? "honcho-dot-ok" : "honcho-dot-err" });
 			dot.setText(ok ? "\u25CF" : "\u25CF");
@@ -377,18 +407,25 @@ export class HonchoSidebarView extends ItemView {
 		const section = parent.createDiv({ cls: "honcho-section honcho-sync-status-section" });
 		section.createEl("h4", { text: "Sync Status" });
 		const statusEl = section.createDiv({ cls: "honcho-sync-status-body" });
-		statusEl.createSpan({ text: "Checking...", cls: "honcho-loading" });
 
 		try {
-			const stale = await findStaleNotes(this.app);
+			// Use cached count if fresh enough
+			let count: number;
+			if (this.staleCountCache && Date.now() - this.staleCountCache.ts < HonchoSidebarView.STALE_CACHE_TTL) {
+				count = this.staleCountCache.count;
+			} else {
+				statusEl.createSpan({ text: "Checking...", cls: "honcho-loading" });
+				const stale = await findStaleNotes(this.app);
+				count = stale.length;
+				this.staleCountCache = { count, ts: Date.now() };
+				statusEl.empty();
+			}
 
-			statusEl.empty();
-
-			if (stale.length === 0) {
+			if (count === 0) {
 				statusEl.createSpan({ text: "All notes up to date", cls: "honcho-text-muted" });
 			} else {
 				statusEl.createSpan({
-					text: `${stale.length} stale note${stale.length !== 1 ? "s" : ""}`,
+					text: `${count} stale note${count !== 1 ? "s" : ""}`,
 					cls: "honcho-text-accent",
 				});
 
@@ -397,6 +434,7 @@ export class HonchoSidebarView extends ItemView {
 					cls: "honcho-btn-small",
 				});
 				btn.addEventListener("click", () => {
+					this.staleCountCache = null; // invalidate on user action
 					this.app.commands.executeCommandById("honcho:show-stale-notes");
 				});
 			}
@@ -421,6 +459,9 @@ export class HonchoSidebarView extends ItemView {
 		const client = this.plugin.getClient();
 		if (!client) return;
 
+		// Increment request ID to discard stale responses
+		const requestId = ++this.contextualRequestId;
+
 		const workspaceId = this.plugin.getWorkspaceId();
 		const peerId = this.plugin.getPeerId();
 
@@ -440,6 +481,9 @@ export class HonchoSidebarView extends ItemView {
 				search_top_k: 10,
 			});
 
+			// Discard if a newer request has been issued
+			if (requestId !== this.contextualRequestId) return;
+
 			contextLabel.remove();
 
 			if (rep.representation) {
@@ -458,6 +502,7 @@ export class HonchoSidebarView extends ItemView {
 				});
 			}
 		} catch {
+			if (requestId !== this.contextualRequestId) return;
 			contextLabel.setText("Could not load contextual representation.");
 			contextLabel.addClass("honcho-error");
 		}
@@ -479,23 +524,54 @@ export class HonchoSidebarView extends ItemView {
 		try {
 			const workspaceId = this.plugin.getWorkspaceId();
 			const peerId = this.plugin.getPeerId();
-			const results = await client.searchConclusions(workspaceId, query, {
-				top_k: 10,
-				filters: { observer_id: peerId, observed_id: peerId },
-			});
+
+			// Search both conclusions and workspace messages in parallel
+			const [conclusions, messages] = await Promise.all([
+				client.searchConclusions(workspaceId, query, {
+					top_k: 5,
+					filters: { observer_id: peerId, observed_id: peerId },
+				}),
+				client.searchWorkspace(workspaceId, query, { limit: 5 }),
+			]);
 
 			resultsEl.empty();
-			if (results.length === 0) {
+
+			if (conclusions.length === 0 && messages.length === 0) {
 				resultsEl.createEl("p", { text: "No results.", cls: "honcho-sidebar-empty" });
 				return;
 			}
 
-			for (const r of results) {
+			// Conclusions
+			for (const r of conclusions) {
 				const card = resultsEl.createDiv({ cls: "honcho-result-card" });
 				card.createEl("div", {
 					text: r.content,
 					cls: "honcho-result-content",
 				});
+			}
+
+			// Messages with source file links
+			for (const m of messages) {
+				const card = resultsEl.createDiv({ cls: "honcho-result-card" });
+				card.createEl("div", {
+					text: m.content,
+					cls: "honcho-result-content",
+				});
+				const sourceFile = m.metadata?.source_file as string | undefined;
+				if (sourceFile) {
+					const link = card.createEl("a", {
+						text: sourceFile,
+						cls: "honcho-result-source",
+						href: "#",
+					});
+					link.addEventListener("click", (e) => {
+						e.preventDefault();
+						const file = this.app.vault.getAbstractFileByPath(sourceFile);
+						if (file instanceof TFile) {
+							this.app.workspace.getLeaf().openFile(file);
+						}
+					});
+				}
 			}
 		} catch (err) {
 			resultsEl.empty();

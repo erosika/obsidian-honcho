@@ -75,6 +75,17 @@ function splitSentences(text: string, maxLen: number): string[] {
 	let buf = "";
 
 	for (const s of sentences) {
+		// Hard-split individual segments that exceed maxLen
+		if (s.length > maxLen) {
+			if (buf.length > 0) {
+				out.push(buf);
+				buf = "";
+			}
+			for (let i = 0; i < s.length; i += maxLen) {
+				out.push(s.slice(i, i + maxLen));
+			}
+			continue;
+		}
 		if (buf.length + s.length > maxLen && buf.length > 0) {
 			out.push(buf);
 			buf = "";

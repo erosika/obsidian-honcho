@@ -51,41 +51,7 @@ export interface StalenessInfo {
  * Hash is computed on body AFTER stripping frontmatter, preventing the
  * feedback loop where writing frontmatter triggers re-ingestion.
  */
-export function checkSyncStatus(app: App, file: TFile): SyncStatus {
-	const fm = readHonchoFrontmatter(app, file);
-	const cache = app.metadataCache.getFileCache(file);
-
-	// Read raw content from cache (sync, no await needed)
-	const rawContent = (app.vault as unknown as { cache?: Record<string, string> }).cache?.[file.path];
-	// Fall back: compute from what we know
-	const body = rawContent ? stripFrontmatter(rawContent) : "";
-	const contentHash = body ? computeContentHash(body) : "";
-
-	// Never synced
-	if (!fm.honcho_synced) {
-		return { needsSync: true, reason: "new", contentHash, mtime: file.stat.mtime };
-	}
-
-	// Content hash mismatch
-	if (fm.honcho_content_hash && contentHash && fm.honcho_content_hash !== contentHash) {
-		return { needsSync: true, reason: "modified", contentHash, mtime: file.stat.mtime };
-	}
-
-	// No stored hash -- fall back to mtime comparison
-	if (!fm.honcho_content_hash) {
-		const syncedTime = new Date(fm.honcho_synced).getTime();
-		if (file.stat.mtime > syncedTime) {
-			return { needsSync: true, reason: "modified", contentHash, mtime: file.stat.mtime };
-		}
-	}
-
-	return { needsSync: false, reason: "unchanged", contentHash, mtime: file.stat.mtime };
-}
-
-/**
- * Async version that reads file content for accurate hashing.
- */
-export async function checkSyncStatusAsync(app: App, file: TFile): Promise<SyncStatus> {
+export async function checkSyncStatus(app: App, file: TFile): Promise<SyncStatus> {
 	const fm = readHonchoFrontmatter(app, file);
 	const rawContent = await app.vault.cachedRead(file);
 	const body = stripFrontmatter(rawContent);
@@ -125,7 +91,7 @@ export async function partitionByStatus(app: App, files: TFile[]): Promise<Parti
 	const counts = { new: 0, modified: 0, unchanged: 0 };
 
 	for (const file of files) {
-		const status = await checkSyncStatusAsync(app, file);
+		const status = await checkSyncStatus(app, file);
 		counts[status.reason]++;
 		if (status.needsSync) {
 			needsSync.push({ file, status });

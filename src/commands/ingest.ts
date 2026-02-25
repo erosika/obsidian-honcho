@@ -1,8 +1,8 @@
 import { type App, Notice, TFile, TFolder } from "obsidian";
 import type { HonchoClient, MessageResponse, SessionConfiguration } from "../honcho-client";
 import { chunkMarkdown } from "../utils/chunker";
-import { writeHonchoFrontmatter } from "../utils/frontmatter";
-import { checkSyncStatusAsync, partitionByStatus, stripFrontmatter, computeContentHash } from "../utils/sync-status";
+import { writeHonchoFrontmatter, normalizeFrontmatterTags } from "../utils/frontmatter";
+import { checkSyncStatus, partitionByStatus, stripFrontmatter, computeContentHash } from "../utils/sync-status";
 
 export interface IngestContext {
 	app: App;
@@ -39,6 +39,10 @@ interface StructuralContext {
 	headings: string[];
 	outgoingLinks: string[];
 	backlinks: string[];
+	backlinkCount: number;
+	isOrphan: boolean;
+	isDeadend: boolean;
+	unresolvedLinks: string[];
 	folder: string;
 	created: string;
 	modified: string;
@@ -49,7 +53,7 @@ function extractStructuralContext(app: App, file: TFile): StructuralContext {
 
 	// Tags from both inline and frontmatter
 	const inlineTags = (cache?.tags ?? []).map((t) => t.tag);
-	const fmTags = ((cache?.frontmatter?.tags as string[]) ?? []).map(
+	const fmTags = normalizeFrontmatterTags(cache?.frontmatter?.tags).map(
 		(t) => (t.startsWith("#") ? t : "#" + t)
 	);
 	const tags = [...new Set([...inlineTags, ...fmTags])];
@@ -62,14 +66,28 @@ function extractStructuralContext(app: App, file: TFile): StructuralContext {
 	// Outgoing links from this file
 	const outgoingLinks = (cache?.links ?? []).map((l) => l.link);
 
-	// Backlinks: invert resolvedLinks
+	// Backlinks: scan resolvedLinks for references to this file
 	const backlinks: string[] = [];
 	const resolved = app.metadataCache.resolvedLinks;
 	if (resolved) {
-		for (const [sourcePath, targets] of Object.entries(resolved)) {
-			if (file.path in (targets as Record<string, number>)) {
+		for (const sourcePath in resolved) {
+			if (resolved[sourcePath]?.[file.path]) {
 				backlinks.push(sourcePath.replace(/\.md$/, ""));
 			}
+		}
+	}
+
+	// Graph signals
+	const backlinkCount = backlinks.length;
+	const isOrphan = backlinkCount === 0;
+	const isDeadend = outgoingLinks.length === 0;
+
+	// Unresolved links: wikilinks that don't resolve to a file
+	const unresolvedLinks: string[] = [];
+	for (const link of cache?.links ?? []) {
+		const dest = app.metadataCache.getFirstLinkpathDest(link.link, file.path);
+		if (!dest) {
+			unresolvedLinks.push(link.link);
 		}
 	}
 
@@ -80,7 +98,7 @@ function extractStructuralContext(app: App, file: TFile): StructuralContext {
 	const created = new Date(file.stat.ctime).toISOString();
 	const modified = new Date(file.stat.mtime).toISOString();
 
-	return { tags, headings, outgoingLinks, backlinks, folder, created, modified };
+	return { tags, headings, outgoingLinks, backlinks, backlinkCount, isOrphan, isDeadend, unresolvedLinks, folder, created, modified };
 }
 
 /**
@@ -106,6 +124,23 @@ function buildStructuralPreamble(file: TFile, ctx: StructuralContext): string {
 	if (ctx.backlinks.length > 0) {
 		parts.push(`Referenced by: ${ctx.backlinks.join(", ")}`);
 	}
+	parts.push(`Backlink count: ${ctx.backlinkCount}`);
+
+	// Graph position label
+	if (ctx.isOrphan && ctx.isDeadend) {
+		parts.push("Graph position: isolated");
+	} else if (ctx.isOrphan) {
+		parts.push("Graph position: orphan");
+	} else if (ctx.isDeadend) {
+		parts.push("Graph position: dead-end");
+	} else if (ctx.backlinkCount >= 5) {
+		parts.push("Graph position: hub");
+	}
+
+	if (ctx.unresolvedLinks.length > 0) {
+		parts.push(`Unresolved links: ${ctx.unresolvedLinks.join(", ")}`);
+	}
+
 	parts.push(`Created: ${ctx.created.split("T")[0]}`);
 	parts.push(`Modified: ${ctx.modified.split("T")[0]}`);
 
@@ -143,7 +178,7 @@ export async function ingestNote(
 ): Promise<IngestResult> {
 	// Gate: check if content has actually changed
 	if (!opts?.force) {
-		const status = await checkSyncStatusAsync(ctx.app, file);
+		const status = await checkSyncStatus(ctx.app, file);
 		if (!status.needsSync) {
 			return { messages: [], skipped: true, reason: "unchanged" };
 		}
@@ -163,7 +198,23 @@ export async function ingestNote(
 	const sessionId = sessionIdForFile(file);
 	const structural = extractStructuralContext(ctx.app, file);
 
-	// Get-or-create session with peer observation roles
+	// Delete existing session to prevent message accumulation on re-ingest.
+	// getOrCreateSession is idempotent, so we delete first then recreate fresh.
+	try {
+		const existing = await ctx.client.getOrCreateSession(
+			ctx.workspaceId,
+			sessionId,
+			{
+				[ctx.observerPeerId]: { observe_me: false, observe_others: true },
+				[ctx.observedPeerId]: { observe_me: true, observe_others: false },
+			}
+		);
+		await ctx.client.deleteSession(ctx.workspaceId, existing.id);
+	} catch {
+		// Session may not exist yet -- that's fine
+	}
+
+	// Create fresh session
 	const session = await ctx.client.getOrCreateSession(
 		ctx.workspaceId,
 		sessionId,
@@ -184,6 +235,10 @@ export async function ingestNote(
 			tags: structural.tags,
 			outgoing_links: structural.outgoingLinks,
 			backlinks: structural.backlinks,
+			backlink_count: structural.backlinkCount,
+			is_orphan: structural.isOrphan,
+			is_deadend: structural.isDeadend,
+			unresolved_links: structural.unresolvedLinks,
 			heading_count: structural.headings.length,
 			created_at: structural.created,
 			modified_at: structural.modified,
@@ -246,22 +301,38 @@ export async function ingestNote(
 	return { messages: created, skipped: false };
 }
 
+export type ProgressCallback = (completed: number, total: number) => void;
+
 export interface BatchIngestResult {
 	totalMessages: number;
 	counts: { new: number; modified: number; unchanged: number };
 }
 
 /**
- * Ingest all markdown files in a folder (non-recursive).
+ * Collect all markdown files in a folder recursively.
+ */
+function collectMarkdownFiles(folder: TFolder): TFile[] {
+	const files: TFile[] = [];
+	for (const child of folder.children) {
+		if (child instanceof TFile && child.extension === "md") {
+			files.push(child);
+		} else if (child instanceof TFolder) {
+			files.push(...collectMarkdownFiles(child));
+		}
+	}
+	return files;
+}
+
+/**
+ * Ingest all markdown files in a folder (recursive).
  * Partitions by sync status first so unchanged files are skipped.
  */
 export async function ingestFolder(
 	ctx: IngestContext,
-	folder: TFolder
+	folder: TFolder,
+	onProgress?: ProgressCallback
 ): Promise<BatchIngestResult> {
-	const files = folder.children.filter(
-		(f): f is TFile => f instanceof TFile && f.extension === "md"
-	);
+	const files = collectMarkdownFiles(folder);
 
 	if (files.length === 0) {
 		new Notice(`No markdown files in ${folder.name}`);
@@ -276,13 +347,17 @@ export async function ingestFolder(
 	}
 
 	let totalMessages = 0;
+	let completed = 0;
 	const batchSize = 5;
 	const toIngest = partition.needsSync.map((e) => e.file);
+	const total = toIngest.length;
 
 	for (let i = 0; i < toIngest.length; i += batchSize) {
 		const batch = toIngest.slice(i, i + batchSize);
 		const results = await Promise.all(batch.map((f) => ingestNote(ctx, f, { force: true })));
 		totalMessages += results.reduce((sum, r) => sum + r.messages.length, 0);
+		completed += batch.length;
+		onProgress?.(completed, total);
 	}
 
 	// Schedule a dream after bulk ingestion
@@ -307,7 +382,8 @@ export async function ingestFolder(
  */
 export async function ingestByTag(
 	ctx: IngestContext,
-	tag: string
+	tag: string,
+	onProgress?: ProgressCallback
 ): Promise<BatchIngestResult> {
 	const normalizedTag = (tag.startsWith("#") ? tag : "#" + tag).toLowerCase();
 	const files: TFile[] = [];
@@ -317,7 +393,7 @@ export async function ingestByTag(
 		if (!cache) continue;
 
 		const inlineTags = (cache.tags ?? []).map((t) => t.tag.toLowerCase());
-		const fmTags = ((cache.frontmatter?.tags as string[]) ?? []).map(
+		const fmTags = normalizeFrontmatterTags(cache.frontmatter?.tags).map(
 			(t) => (t.startsWith("#") ? t : "#" + t).toLowerCase()
 		);
 		const allTags = [...inlineTags, ...fmTags];
@@ -340,13 +416,17 @@ export async function ingestByTag(
 	}
 
 	let totalMessages = 0;
+	let completed = 0;
 	const batchSize = 5;
 	const toIngest = partition.needsSync.map((e) => e.file);
+	const total = toIngest.length;
 
 	for (let i = 0; i < toIngest.length; i += batchSize) {
 		const batch = toIngest.slice(i, i + batchSize);
 		const results = await Promise.all(batch.map((f) => ingestNote(ctx, f, { force: true })));
 		totalMessages += results.reduce((sum, r) => sum + r.messages.length, 0);
+		completed += batch.length;
+		onProgress?.(completed, total);
 	}
 
 	// Schedule a dream after bulk ingestion
@@ -432,6 +512,23 @@ export async function ingestLinked(
 	}
 
 	return { totalMessages, ingested, skipped };
+}
+
+/**
+ * Count backlinks to a file from the metadata cache's resolved links.
+ * Shared between ingestion and the SyncQueue priority computation.
+ */
+export function countBacklinks(app: App, file: TFile): number {
+	let count = 0;
+	const resolved = app.metadataCache.resolvedLinks;
+	if (resolved) {
+		for (const sourcePath in resolved) {
+			if (resolved[sourcePath]?.[file.path]) {
+				count++;
+			}
+		}
+	}
+	return count;
 }
 
 /**

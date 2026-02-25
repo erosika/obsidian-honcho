@@ -1,4 +1,4 @@
-import { App, MarkdownRenderer, Modal, Setting, normalizePath, TFile } from "obsidian";
+import { App, MarkdownRenderer, Modal, Notice, Setting, normalizePath, TFile } from "obsidian";
 import type { HonchoClient, ReasoningLevel } from "../honcho-client";
 
 export interface NoteContext {
@@ -17,24 +17,28 @@ export class HonchoChatModal extends Modal {
 	private workspaceId: string;
 	private peerId: string;
 	private noteContext: NoteContext | null;
+	private sessionId: string | undefined;
 	private messages: ChatMessage[] = [];
 	private reasoningLevel: ReasoningLevel = "medium";
 	private chatEl: HTMLElement | null = null;
 	private inputEl: HTMLTextAreaElement | null = null;
 	private sending = false;
+	private abortController: AbortController | null = null;
 
 	constructor(
 		app: App,
 		client: HonchoClient,
 		workspaceId: string,
 		peerId: string,
-		noteContext?: NoteContext
+		noteContext?: NoteContext,
+		sessionId?: string
 	) {
 		super(app);
 		this.client = client;
 		this.workspaceId = workspaceId;
 		this.peerId = peerId;
 		this.noteContext = noteContext ?? null;
+		this.sessionId = sessionId;
 	}
 
 	onOpen(): void {
@@ -106,11 +110,19 @@ export class HonchoChatModal extends Modal {
 		});
 		saveBtn.addEventListener("click", () => this.saveConversation());
 
+		const dailyBtn = btnRow.createEl("button", {
+			text: "Append to daily note",
+			cls: "honcho-chat-daily",
+		});
+		dailyBtn.addEventListener("click", () => this.appendToDailyNote());
+
 		// Focus input
 		setTimeout(() => this.inputEl?.focus(), 50);
 	}
 
 	onClose(): void {
+		this.abortController?.abort();
+		this.abortController = null;
 		this.contentEl.empty();
 	}
 
@@ -152,12 +164,16 @@ export class HonchoChatModal extends Modal {
 			? `[Context: viewing "${this.noteContext.title}"${this.noteContext.tags.length > 0 ? `, tags: ${this.noteContext.tags.join(", ")}` : ""}]\n\n${query}`
 			: query;
 
+		// Create AbortController for this request
+		this.abortController = new AbortController();
+
 		try {
 			const stream = this.client.peerChatStream(
 				this.workspaceId,
 				this.peerId,
 				contextualQuery,
-				{ reasoning_level: this.reasoningLevel }
+				{ reasoning_level: this.reasoningLevel, session_id: this.sessionId },
+				this.abortController.signal
 			);
 
 			for await (const event of stream) {
@@ -176,20 +192,30 @@ export class HonchoChatModal extends Modal {
 				}
 			}
 		} catch (err) {
-			if (!accumulated) {
+			if (err instanceof DOMException && err.name === "AbortError") {
+				// User closed modal mid-stream -- keep partial content
+				if (accumulated) {
+					accumulated += "\n\n*[Response interrupted]*";
+				}
+			} else if (!accumulated) {
 				// Streaming failed entirely -- fall back to non-streaming
 				try {
 					const resp = await this.client.peerChat(
 						this.workspaceId,
 						this.peerId,
 						contextualQuery,
-						{ reasoning_level: this.reasoningLevel }
+						{ reasoning_level: this.reasoningLevel, session_id: this.sessionId }
 					);
 					accumulated = resp.content ?? "No response.";
 				} catch (fallbackErr) {
 					accumulated = `Error: ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`;
 				}
+			} else {
+				// Stream broke mid-response -- mark as truncated
+				accumulated += "\n\n*[Response interrupted]*";
 			}
+		} finally {
+			this.abortController = null;
 		}
 
 		// Finalize: replace streaming bubble with rendered content
@@ -224,6 +250,59 @@ export class HonchoChatModal extends Modal {
 		}
 
 		this.chatEl.scrollTop = this.chatEl.scrollHeight;
+	}
+
+	private async appendToDailyNote(): Promise<void> {
+		if (this.messages.length === 0) return;
+
+		const dailyPlugin = (this.app as any).internalPlugins?.plugins?.["daily-notes"];
+		if (!dailyPlugin?.enabled) {
+			new Notice("Daily notes plugin is not enabled");
+			return;
+		}
+
+		const config = dailyPlugin.instance?.options ?? {};
+		const folder = config.folder ?? "";
+		const format = config.format ?? "YYYY-MM-DD";
+
+		// Build today's filename using the configured format
+		const now = new Date();
+		const dateStr = format
+			.replace("YYYY", String(now.getFullYear()))
+			.replace("MM", String(now.getMonth() + 1).padStart(2, "0"))
+			.replace("DD", String(now.getDate()).padStart(2, "0"));
+
+		const dailyPath = normalizePath(
+			folder ? `${folder}/${dateStr}.md` : `${dateStr}.md`
+		);
+
+		// Build conversation markdown
+		const lines: string[] = [
+			"",
+			`## Honcho Chat \u2014 ${now.toLocaleTimeString()}`,
+			"",
+		];
+
+		if (this.noteContext) {
+			lines.push(`*Context: ${this.noteContext.title}*`, "");
+		}
+
+		for (const msg of this.messages) {
+			const label = msg.role === "user" ? "**You**" : "**Honcho**";
+			lines.push(`${label}: ${msg.content}`, "");
+		}
+
+		const text = lines.join("\n");
+
+		// Append to existing daily note or create it
+		const existing = this.app.vault.getAbstractFileByPath(dailyPath);
+		if (existing instanceof TFile) {
+			await this.app.vault.append(existing, text);
+		} else {
+			await this.app.vault.create(dailyPath, text.trimStart());
+		}
+
+		new Notice(`Appended conversation to ${dateStr}`);
 	}
 
 	private async saveConversation(): Promise<void> {
