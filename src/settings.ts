@@ -12,6 +12,7 @@ export interface HonchoPluginSettings {
 	autoSyncTags: string[];
 	autoSyncFolders: string[];
 	trackFrontmatter: boolean;
+	linkDepth: number;
 }
 
 export const DEFAULT_SETTINGS: HonchoPluginSettings = {
@@ -25,14 +26,24 @@ export const DEFAULT_SETTINGS: HonchoPluginSettings = {
 	autoSyncTags: [],
 	autoSyncFolders: [],
 	trackFrontmatter: true,
+	linkDepth: 1,
 };
 
 export class HonchoSettingTab extends PluginSettingTab {
 	plugin: HonchoPlugin;
+	private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 	constructor(app: App, plugin: HonchoPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
+	}
+
+	private debouncedSave(): void {
+		if (this.saveTimer) clearTimeout(this.saveTimer);
+		this.saveTimer = setTimeout(async () => {
+			this.saveTimer = null;
+			await this.plugin.saveSettings();
+		}, 500);
 	}
 
 	display(): void {
@@ -53,9 +64,9 @@ export class HonchoSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("Enter your API key")
 					.setValue(this.plugin.settings.apiKey)
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.apiKey = value;
-						await this.plugin.saveSettings();
+						this.debouncedSave();
 					});
 			});
 
@@ -66,9 +77,9 @@ export class HonchoSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("https://api.honcho.dev")
 					.setValue(this.plugin.settings.baseUrl)
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.baseUrl = value;
-						await this.plugin.saveSettings();
+						this.debouncedSave();
 					})
 			);
 
@@ -78,9 +89,9 @@ export class HonchoSettingTab extends PluginSettingTab {
 			.addText((text) =>
 				text
 					.setValue(this.plugin.settings.apiVersion)
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.apiVersion = value;
-						await this.plugin.saveSettings();
+						this.debouncedSave();
 					})
 			);
 
@@ -109,9 +120,9 @@ export class HonchoSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder(this.app.vault.getName())
 					.setValue(this.plugin.settings.workspaceName)
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.workspaceName = value;
-						await this.plugin.saveSettings();
+						this.debouncedSave();
 					})
 			);
 
@@ -122,9 +133,9 @@ export class HonchoSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("obsidian")
 					.setValue(this.plugin.settings.peerName)
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.peerName = value;
-						await this.plugin.saveSettings();
+						this.debouncedSave();
 					})
 			);
 
@@ -135,8 +146,25 @@ export class HonchoSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("Same as observer")
 					.setValue(this.plugin.settings.observedPeerName)
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.observedPeerName = value;
+						this.debouncedSave();
+					})
+			);
+
+		// -- Ingestion --
+		containerEl.createEl("h3", { text: "Ingestion" });
+
+		new Setting(containerEl)
+			.setName("Link traversal depth")
+			.setDesc("How many levels of outgoing links to follow when using 'Ingest + linked notes'")
+			.addSlider((slider) =>
+				slider
+					.setLimits(1, 3, 1)
+					.setValue(this.plugin.settings.linkDepth)
+					.setDynamicTooltip()
+					.onChange(async (value) => {
+						this.plugin.settings.linkDepth = value;
 						await this.plugin.saveSettings();
 					})
 			);
@@ -161,12 +189,12 @@ export class HonchoSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("#honcho, #identity")
 					.setValue(this.plugin.settings.autoSyncTags.join(", "))
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.autoSyncTags = value
 							.split(",")
 							.map((t) => t.trim())
 							.filter((t) => t.length > 0);
-						await this.plugin.saveSettings();
+						this.debouncedSave();
 					})
 			);
 
@@ -177,12 +205,12 @@ export class HonchoSettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("identity, notes/honcho")
 					.setValue(this.plugin.settings.autoSyncFolders.join(", "))
-					.onChange(async (value) => {
+					.onChange((value) => {
 						this.plugin.settings.autoSyncFolders = value
 							.split(",")
 							.map((f) => f.trim())
 							.filter((f) => f.length > 0);
-						await this.plugin.saveSettings();
+						this.debouncedSave();
 					})
 			);
 
@@ -191,7 +219,7 @@ export class HonchoSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Track ingestion in frontmatter")
-			.setDesc("Add honcho_synced timestamp and honcho_conclusion_ids to ingested notes")
+			.setDesc("Add honcho_synced, honcho_session_id, and honcho_message_count to ingested notes")
 			.addToggle((toggle) =>
 				toggle.setValue(this.plugin.settings.trackFrontmatter).onChange(async (value) => {
 					this.plugin.settings.trackFrontmatter = value;

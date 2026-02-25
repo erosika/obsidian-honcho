@@ -3,15 +3,20 @@ import { HonchoClient } from "./honcho-client";
 import { DEFAULT_SETTINGS, HonchoSettingTab, type HonchoPluginSettings } from "./settings";
 import { HONCHO_VIEW_TYPE, HonchoSidebarView } from "./views/sidebar-view";
 import { HonchoChatModal } from "./views/chat-modal";
+import { SessionManagerModal } from "./views/session-manager";
+import { StaleNotesModal } from "./views/stale-notes-modal";
 import { HonchoSearchModal } from "./commands/search";
-import { createIngestContext, ingestNote, ingestFolder, ingestByTag } from "./commands/ingest";
-import { createSyncContext, generateIdentityNote, pullConclusions } from "./commands/sync";
-import { matchesSyncFilters } from "./utils/frontmatter";
+import { createIngestContext, ingestNote, ingestFolder, ingestByTag, ingestLinked } from "./commands/ingest";
+import { createSyncContext, generateIdentityNote, pullConclusions, pushPeerCardFromNote } from "./commands/sync";
+import type { NoteContext } from "./views/chat-modal";
+import { matchesSyncFilters, normalizeFrontmatterTags, readHonchoFrontmatter } from "./utils/frontmatter";
+import { registerHonchoCodeBlock } from "./views/post-processor";
+import { SyncQueue } from "./utils/sync-queue";
 
 export default class HonchoPlugin extends Plugin {
 	settings: HonchoPluginSettings = DEFAULT_SETTINGS;
 	private client: HonchoClient | null = null;
-	private saveDebounceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+	private syncQueue: SyncQueue | null = null;
 	private initialized = false;
 	private workspaceId = "";
 	private peerId = "";
@@ -44,6 +49,18 @@ export default class HonchoPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: "ingest-linked",
+			name: "Ingest current note + linked notes",
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file) return false;
+				if (checking) return true;
+				this.runIngestLinked(file);
+				return true;
+			},
+		});
+
+		this.addCommand({
 			id: "ingest-folder",
 			name: "Ingest folder",
 			callback: () => this.runIngestFolderPicker(),
@@ -68,6 +85,12 @@ export default class HonchoPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: "manage-sessions",
+			name: "Manage sessions",
+			callback: () => this.openSessionManager(),
+		});
+
+		this.addCommand({
 			id: "generate-identity-note",
 			name: "Generate identity note",
 			callback: () => this.runGenerateIdentity(),
@@ -79,8 +102,47 @@ export default class HonchoPlugin extends Plugin {
 			callback: () => this.runPullConclusions(),
 		});
 
+		this.addCommand({
+			id: "schedule-dream",
+			name: "Schedule Honcho dream",
+			callback: () => this.runScheduleDream(),
+		});
+
+		this.addCommand({
+			id: "chat-about-note",
+			name: "Chat with Honcho about this note",
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file) return false;
+				if (checking) return true;
+				this.openContextualChat(file);
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: "push-peer-card",
+			name: "Push note as peer card",
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file) return false;
+				if (checking) return true;
+				this.runPushPeerCard(file);
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: "show-stale-notes",
+			name: "Show stale notes",
+			callback: () => this.openStaleNotes(),
+		});
+
 		// -- Settings tab --
 		this.addSettingTab(new HonchoSettingTab(this.app, this));
+
+		// -- Code block processor --
+		registerHonchoCodeBlock(this);
 
 		// -- Ribbon icon --
 		this.addRibbonIcon("brain", "Open Honcho", () => this.activateSidebar());
@@ -94,6 +156,21 @@ export default class HonchoPlugin extends Plugin {
 							.setIcon("upload")
 							.onClick(() => this.runIngest(file));
 					});
+					menu.addItem((item) => {
+						item.setTitle("Ingest + linked notes")
+							.setIcon("git-branch")
+							.onClick(() => this.runIngestLinked(file));
+					});
+					menu.addItem((item) => {
+						item.setTitle("Chat about this note")
+							.setIcon("message-circle")
+							.onClick(() => this.openContextualChat(file));
+					});
+					menu.addItem((item) => {
+						item.setTitle("Push as peer card")
+							.setIcon("user-check")
+							.onClick(() => this.runPushPeerCard(file));
+					});
 				}
 				if (file instanceof TFolder) {
 					menu.addItem((item) => {
@@ -106,6 +183,8 @@ export default class HonchoPlugin extends Plugin {
 		);
 
 		// -- Auto-sync on save --
+		this.syncQueue = new SyncQueue(this.app, (file) => this.runIngest(file, true));
+
 		this.registerEvent(
 			this.app.vault.on("modify", (file) => {
 				if (
@@ -124,24 +203,52 @@ export default class HonchoPlugin extends Plugin {
 					return;
 				}
 
-				// Debounce 5s per file
-				const existing = this.saveDebounceTimers.get(file.path);
-				if (existing) clearTimeout(existing);
+				this.syncQueue?.enqueue(file);
+			})
+		);
 
-				const timer = setTimeout(() => {
-					this.saveDebounceTimers.delete(file.path);
-					this.runIngest(file, true);
-				}, 5000);
-				this.saveDebounceTimers.set(file.path, timer);
+		// -- Auto-ingest on file creation --
+		this.registerEvent(
+			this.app.vault.on("create", (file) => {
+				if (
+					!this.settings.autoSync ||
+					!(file instanceof TFile) ||
+					file.extension !== "md"
+				) {
+					return;
+				}
+				if (!matchesSyncFilters(
+					this.app,
+					file,
+					this.settings.autoSyncTags,
+					this.settings.autoSyncFolders
+				)) {
+					return;
+				}
+
+				this.syncQueue?.enqueue(file);
+			})
+		);
+
+		// -- Session lifecycle: rename --
+		this.registerEvent(
+			this.app.vault.on("rename", (file, oldPath) => {
+				if (!(file instanceof TFile) || file.extension !== "md") return;
+				this.handleFileRename(file, oldPath);
+			})
+		);
+
+		// -- Session lifecycle: delete --
+		this.registerEvent(
+			this.app.vault.on("delete", (file) => {
+				if (!(file instanceof TFile) || file.extension !== "md") return;
+				this.handleFileDelete(file.path);
 			})
 		);
 	}
 
 	onunload(): void {
-		for (const timer of this.saveDebounceTimers.values()) {
-			clearTimeout(timer);
-		}
-		this.saveDebounceTimers.clear();
+		this.syncQueue?.clear();
 	}
 
 	// -----------------------------------------------------------------------
@@ -246,10 +353,30 @@ export default class HonchoPlugin extends Plugin {
 			const ctx = createIngestContext(
 				this.app, client, workspaceId, peerId, observedPeerId, this.settings.trackFrontmatter
 			);
-			const created = await ingestNote(ctx, file);
+			const result = await ingestNote(ctx, file);
 			if (!silent) {
-				new Notice(`Ingested ${file.basename}: ${created.length} message${created.length !== 1 ? "s" : ""}`);
+				if (result.skipped) {
+					new Notice(`${file.basename}: skipped (${result.reason ?? "unchanged"})`);
+				} else {
+					const n = result.messages.length;
+					new Notice(`Ingested ${file.basename}: ${n} message${n !== 1 ? "s" : ""}`);
+				}
 			}
+		} catch (err) {
+			new Notice(`Ingest failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	private async runIngestLinked(file: TFile): Promise<void> {
+		try {
+			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
+			const ctx = createIngestContext(
+				this.app, client, workspaceId, peerId, observedPeerId, this.settings.trackFrontmatter
+			);
+			const result = await ingestLinked(ctx, file, this.settings.linkDepth);
+			const parts = [`${result.ingested} ingested`];
+			if (result.skipped > 0) parts.push(`${result.skipped} unchanged`);
+			new Notice(`${file.basename} + linked: ${parts.join(", ")}`);
 		} catch (err) {
 			new Notice(`Ingest failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
@@ -261,15 +388,23 @@ export default class HonchoPlugin extends Plugin {
 			const ctx = createIngestContext(
 				this.app, client, workspaceId, peerId, observedPeerId, this.settings.trackFrontmatter
 			);
-			const total = await ingestFolder(ctx, folder);
-			new Notice(`Ingested ${folder.name}: ${total} message${total !== 1 ? "s" : ""}`);
+			const progressNotice = new Notice(`${folder.name}: scanning...`, 0);
+			const result = await ingestFolder(ctx, folder, (done, total) => {
+				progressNotice.setMessage(`${folder.name}: ${done}/${total} ingested...`);
+			});
+			progressNotice.hide();
+			const { counts } = result;
+			const parts: string[] = [];
+			if (counts.new > 0) parts.push(`${counts.new} new`);
+			if (counts.modified > 0) parts.push(`${counts.modified} modified`);
+			if (counts.unchanged > 0) parts.push(`${counts.unchanged} unchanged`);
+			new Notice(`${folder.name}: ${parts.join(", ")}`);
 		} catch (err) {
 			new Notice(`Ingest failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
 
 	private runIngestFolderPicker(): void {
-		// Use a simple prompt - Obsidian doesn't have a native folder picker command
 		const folders = this.app.vault.getAllLoadedFiles()
 			.filter((f): f is TFolder => f instanceof TFolder && f.path !== "/");
 
@@ -278,7 +413,6 @@ export default class HonchoPlugin extends Plugin {
 			return;
 		}
 
-		// Use the fuzzy suggest modal approach
 		const { FuzzySuggestModal } = require("obsidian") as typeof import("obsidian");
 
 		class FolderPicker extends FuzzySuggestModal<TFolder> {
@@ -306,7 +440,6 @@ export default class HonchoPlugin extends Plugin {
 	}
 
 	private runIngestByTagPicker(): void {
-		// Collect all tags from the vault
 		const tagSet = new Set<string>();
 		for (const file of this.app.vault.getMarkdownFiles()) {
 			const cache = this.app.metadataCache.getFileCache(file);
@@ -314,7 +447,7 @@ export default class HonchoPlugin extends Plugin {
 			for (const t of cache.tags ?? []) {
 				tagSet.add(t.tag);
 			}
-			for (const t of (cache.frontmatter?.tags as string[]) ?? []) {
+			for (const t of normalizeFrontmatterTags(cache.frontmatter?.tags)) {
 				tagSet.add(t.startsWith("#") ? t : "#" + t);
 			}
 		}
@@ -354,8 +487,17 @@ export default class HonchoPlugin extends Plugin {
 				const ctx = createIngestContext(
 					this.app, client, workspaceId, peerId, observedPeerId, this.settings.trackFrontmatter
 				);
-				const total = await ingestByTag(ctx, tag);
-				new Notice(`Ingested ${tag}: ${total} message${total !== 1 ? "s" : ""}`);
+				const progressNotice = new Notice(`${tag}: scanning...`, 0);
+				const result = await ingestByTag(ctx, tag, (done, total) => {
+					progressNotice.setMessage(`${tag}: ${done}/${total} ingested...`);
+				});
+				progressNotice.hide();
+				const { counts } = result;
+				const parts: string[] = [];
+				if (counts.new > 0) parts.push(`${counts.new} new`);
+				if (counts.modified > 0) parts.push(`${counts.modified} modified`);
+				if (counts.unchanged > 0) parts.push(`${counts.unchanged} unchanged`);
+				new Notice(`${tag}: ${parts.join(", ")}`);
 			} catch (err) {
 				new Notice(`Ingest failed: ${err instanceof Error ? err.message : String(err)}`);
 			}
@@ -381,10 +523,91 @@ export default class HonchoPlugin extends Plugin {
 
 	private async openChat(): Promise<void> {
 		try {
-			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
+			const { client, workspaceId, observedPeerId } = await this.ensureInitialized();
 			new HonchoChatModal(this.app, client, workspaceId, observedPeerId).open();
 		} catch (err) {
 			new Notice(`${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	private async openContextualChat(file: TFile): Promise<void> {
+		try {
+			const { client, workspaceId, observedPeerId } = await this.ensureInitialized();
+			const cache = this.app.metadataCache.getFileCache(file);
+			const noteContext: NoteContext = {
+				title: file.basename,
+				tags: (cache?.tags ?? []).map((t) => t.tag),
+				headings: (cache?.headings ?? []).map((h) => h.heading),
+			};
+			// Pass session ID if the note has been ingested, grounding chat in its content
+			const fm = readHonchoFrontmatter(this.app, file);
+			new HonchoChatModal(this.app, client, workspaceId, observedPeerId, noteContext, fm.honcho_session_id).open();
+		} catch (err) {
+			new Notice(`${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// Stale Notes
+	// -----------------------------------------------------------------------
+
+	private async openStaleNotes(): Promise<void> {
+		try {
+			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
+			const ctx = createIngestContext(
+				this.app, client, workspaceId, peerId, observedPeerId, this.settings.trackFrontmatter
+			);
+			new StaleNotesModal(this.app, ctx).open();
+		} catch (err) {
+			new Notice(`${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// Peer Card
+	// -----------------------------------------------------------------------
+
+	private async runPushPeerCard(file: TFile): Promise<void> {
+		try {
+			const { client, workspaceId, observedPeerId } = await this.ensureInitialized();
+			const ctx = createSyncContext(this.app, client, workspaceId, observedPeerId);
+			await pushPeerCardFromNote(ctx, file);
+		} catch (err) {
+			new Notice(`Failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// Session Manager
+	// -----------------------------------------------------------------------
+
+	private async openSessionManager(): Promise<void> {
+		try {
+			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
+			new SessionManagerModal(
+				this.app,
+				client,
+				workspaceId,
+				peerId,
+				observedPeerId,
+				this.settings.trackFrontmatter
+			).open();
+		} catch (err) {
+			new Notice(`${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// Dream
+	// -----------------------------------------------------------------------
+
+	private async runScheduleDream(): Promise<void> {
+		try {
+			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
+			await client.scheduleDream(workspaceId, peerId, { observed: observedPeerId });
+			new Notice("Dream scheduled -- Honcho will process ingested material");
+		} catch (err) {
+			new Notice(`Failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
 
@@ -411,6 +634,64 @@ export default class HonchoPlugin extends Plugin {
 			this.app.workspace.getLeaf().openFile(file);
 		} catch (err) {
 			new Notice(`Failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// Session lifecycle (rename / delete)
+	// -----------------------------------------------------------------------
+
+	private async handleFileRename(file: TFile, oldPath: string): Promise<void> {
+		try {
+			const { client, workspaceId } = await this.ensureInitialized();
+			const oldSessionId = `obsidian:file:${oldPath}`;
+
+			// Try to find the old session and update its metadata
+			const sessions = await client.listSessions(workspaceId, {
+				source: "obsidian",
+				file_path: oldPath,
+			}, 1, 1);
+
+			if (sessions.items.length > 0) {
+				const session = sessions.items[0];
+				await client.updateSession(workspaceId, session.id, {
+					metadata: {
+						...session.metadata,
+						file_path: file.path,
+						file_name: file.basename,
+						folder: file.parent?.path ?? "/",
+						renamed_from: oldPath,
+						renamed_at: new Date().toISOString(),
+					},
+				});
+			}
+		} catch {
+			// Best-effort: don't disrupt the user's rename operation
+		}
+	}
+
+	private async handleFileDelete(filePath: string): Promise<void> {
+		try {
+			const { client, workspaceId } = await this.ensureInitialized();
+
+			const sessions = await client.listSessions(workspaceId, {
+				source: "obsidian",
+				file_path: filePath,
+			}, 1, 1);
+
+			if (sessions.items.length > 0) {
+				const session = sessions.items[0];
+				// Mark as inactive rather than deleting -- preserves derived conclusions
+				await client.updateSession(workspaceId, session.id, {
+					metadata: {
+						...session.metadata,
+						deleted_from_vault: true,
+						deleted_at: new Date().toISOString(),
+					},
+				});
+			}
+		} catch {
+			// Best-effort: don't disrupt the user's delete operation
 		}
 	}
 }

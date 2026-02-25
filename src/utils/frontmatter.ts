@@ -4,6 +4,7 @@ export interface HonchoFrontmatter {
 	honcho_synced?: string;
 	honcho_session_id?: string;
 	honcho_message_count?: number;
+	honcho_content_hash?: string;
 }
 
 /**
@@ -18,6 +19,7 @@ export function readHonchoFrontmatter(app: App, file: TFile): HonchoFrontmatter 
 		honcho_synced: fm.honcho_synced as string | undefined,
 		honcho_session_id: fm.honcho_session_id as string | undefined,
 		honcho_message_count: fm.honcho_message_count as number | undefined,
+		honcho_content_hash: fm.honcho_content_hash as string | undefined,
 	};
 }
 
@@ -39,7 +41,20 @@ export async function writeHonchoFrontmatter(
 		if (data.honcho_message_count !== undefined) {
 			fm.honcho_message_count = data.honcho_message_count;
 		}
+		if (data.honcho_content_hash !== undefined) {
+			fm.honcho_content_hash = data.honcho_content_hash;
+		}
 	});
+}
+
+/**
+ * Safely coerce frontmatter tags to a string array.
+ * Obsidian allows `tags: foo` (string) or `tags: [foo, bar]` (array).
+ */
+export function normalizeFrontmatterTags(raw: unknown): string[] {
+	if (Array.isArray(raw)) return raw.map(String);
+	if (typeof raw === "string") return [raw];
+	return [];
 }
 
 /**
@@ -66,7 +81,7 @@ export function matchesSyncFilters(
 	if (tags.length > 0) {
 		const cache = app.metadataCache.getFileCache(file);
 		const fileTags = (cache?.tags ?? []).map((t) => t.tag.toLowerCase());
-		const fmTags = ((cache?.frontmatter?.tags as string[]) ?? []).map(
+		const fmTags = normalizeFrontmatterTags(cache?.frontmatter?.tags).map(
 			(t) => (t.startsWith("#") ? t : "#" + t).toLowerCase()
 		);
 		const allTags = [...fileTags, ...fmTags];
