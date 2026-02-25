@@ -318,6 +318,17 @@ export default class HonchoPlugin extends Plugin {
 
 		const local = await this.loadData();
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, globalOverrides, local);
+
+		// Ensure the obsidian host block exists in ~/.honcho/config.json
+		// so other plugins (cursor-honcho, claude-honcho) can see it.
+		if (this.settings.apiKey) {
+			saveGlobalConfig({
+				apiKey: this.settings.apiKey,
+				peerName: this.settings.peerName,
+				workspace: this.getWorkspaceId(),
+				baseUrl: this.settings.baseUrl,
+			});
+		}
 	}
 
 	async saveSettings(): Promise<void> {
@@ -335,7 +346,7 @@ export default class HonchoPlugin extends Plugin {
 			saveGlobalConfig({
 				apiKey: this.settings.apiKey,
 				peerName: this.settings.peerName,
-				workspace: this.settings.workspaceName || this.app.vault.getName(),
+				workspace: this.getWorkspaceId(),
 				baseUrl: this.settings.baseUrl,
 			});
 		}
@@ -359,7 +370,7 @@ export default class HonchoPlugin extends Plugin {
 	}
 
 	getWorkspaceId(): string {
-		return this.settings.workspaceName || this.app.vault.getName();
+		return this.settings.workspaceName || "obsidian";
 	}
 
 	getPeerId(): string {

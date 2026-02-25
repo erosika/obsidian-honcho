@@ -383,6 +383,7 @@
     <li><a href="#tools">MCP Tool Reference</a></li>
     <li><a href="#data-flow">Data Flow</a></li>
     <li><a href="#setup">Setup Guide</a></li>
+    <li><a href="#demos">Demo &amp; Autonomous Examples</a></li>
     <li><a href="#status">Current Status</a></li>
   </ol>
 </nav>
@@ -391,11 +392,11 @@
 <section id="concept">
   <h2>Concept</h2>
 
-  <p>Obsidian is where you think. Honcho is what remembers. The premise of this project is that a personal knowledge base -- notes, journals, ideas, references -- is the highest-fidelity signal of who someone is and how they think. Not chat logs. Not browsing history. The structured artifacts a person deliberately creates and maintains.</p>
+  <p>Your vault is the highest-fidelity signal of who you are. Not chat logs, not browsing history &mdash; the things you deliberately write down and organize. Honcho turns that signal into persistent identity.</p>
 
-  <p>Honcho reasons over conversations. It derives conclusions, builds representations, and tracks how understanding evolves over time. The Obsidian plugin translates vault notes into a form Honcho can reason over: each note becomes a session with structured metadata and full content. Honcho observes and derives meaning. The conclusions it generates are persistent, searchable, and usable by any downstream system.</p>
+  <p>The plugin is the bridge. Each note becomes a Honcho session with a pair of linked messages &mdash; one for document context (metadata, graph position, tags, links), one for the full body. Honcho observes and derives conclusions about your thinking over time. Those conclusions accumulate, compound, and become available to anything downstream.</p>
 
-  <p>There are two ways to use this system, and they compose. Used alone, the plugin gives Obsidian a persistent memory layer -- your vault accumulates identity over time. Combined with the MCP server, external agents gain vault access and workspace-specific intelligence, making your knowledge base an autonomous resource that agents can consult, extend, and reason over.</p>
+  <p>Two setups, and they compose. The plugin alone gives your vault a memory layer &mdash; identity that persists and deepens as you write. Add the MCP server and external agents get direct access to both the vault and the identity Honcho has built from it. Your knowledge base becomes an autonomous resource, not a passive archive.</p>
 
   <div class="callout">
     <strong>Key distinction</strong> &mdash; There are two Honcho MCPs. The <strong>generic Honcho MCP</strong> (<code>mcp.honcho.dev</code>) handles workspace-agnostic operations: semantic search, chat, conclusions. The <strong>Obsidian-Honcho MCP</strong> handles vault access and obsidian-workspace-specific Honcho operations. They are designed to run alongside each other.
@@ -407,30 +408,50 @@
   <h2>Architecture</h2>
 
   <div class="mermaid">
-%%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#1f3150', 'primaryTextColor': '#c9d1d9', 'primaryBorderColor': '#3d6ea5', 'lineColor': '#3d6ea5', 'secondaryColor': '#162030', 'tertiaryColor': '#11151c', 'edgeLabelBackground': '#0b0e14' }}}%%
+%%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#1f3150', 'primaryTextColor': '#c9d1d9', 'primaryBorderColor': '#3d6ea5', 'lineColor': '#3d6ea5', 'secondaryColor': '#162030', 'tertiaryColor': '#11151c', 'edgeLabelBackground': '#0b0e14', 'fontSize': '14px' }}}%%
 flowchart TD
-    VAULT["Obsidian Vault<br/>(markdown files)"]
-    PLUGIN["Obsidian Plugin<br/>(ingestion bridge)"]
-    HONCHO["Honcho API<br/>(identity + memory)"]
-    OMCP["Obsidian-Honcho MCP<br/>(vault + workspace tools)"]
-    HMCP["Generic Honcho MCP<br/>(mcp.honcho.dev)"]
-    AGENT["Agent<br/>(Claude, etc.)"]
+    AGENT["Agent<br/>(Claude, Cursor, etc.)"]
 
-    VAULT <-->|"read/write"| PLUGIN
-    PLUGIN -->|"sessions + messages"| HONCHO
-    HONCHO -->|"conclusions +<br/>representations"| PLUGIN
-    OMCP <-->|"CLI / REST / filesystem"| VAULT
-    OMCP <-->|"classify, reflect, status"| HONCHO
-    HMCP <-->|"search, chat, conclude"| HONCHO
-    AGENT -->|"tool calls"| OMCP
-    AGENT -->|"tool calls"| HMCP
+    subgraph MCP_LAYER [" MCP Servers "]
+        OHMCP["Obsidian-Honcho MCP<br/>6 vault tools + 3 bridge tools"]
+        HMCP["Generic Honcho MCP<br/>mcp.honcho.dev"]
+    end
 
-    style VAULT fill:#162030,stroke:#3d6ea5,color:#c9d1d9
-    style PLUGIN fill:#1f3150,stroke:#3d6ea5,color:#c9d1d9
-    style HONCHO fill:#1f3150,stroke:#7ee6a8,color:#c9d1d9
-    style OMCP fill:#162030,stroke:#bc8cff,color:#c9d1d9
-    style HMCP fill:#162030,stroke:#bc8cff,color:#c9d1d9
-    style AGENT fill:#11151c,stroke:#e6a855,color:#c9d1d9
+    subgraph LOCAL [" Local "]
+        PLUGIN["Obsidian Plugin<br/>ingestion, sync tracking, chat"]
+        VAULT["Obsidian Vault<br/>markdown, frontmatter, wikilinks"]
+    end
+
+    subgraph HONCHO [" Honcho API "]
+        SESSIONS["Sessions<br/>1 per note, 2 linked messages"]
+        CONCLUSIONS["Conclusions<br/>derived observations"]
+        DREAMS["Dreams<br/>cross-session synthesis"]
+    end
+
+    AGENT -->|"vault + bridge tools"| OHMCP
+    AGENT -->|"search, chat, conclude"| HMCP
+
+    OHMCP <-->|"CLI / REST / filesystem"| VAULT
+    OHMCP -->|"classify, reflect, status"| SESSIONS
+
+    PLUGIN <--> VAULT
+    PLUGIN -->|"ingest: 2 messages per note"| SESSIONS
+
+    SESSIONS -.->|"observe_me"| CONCLUSIONS
+    CONCLUSIONS -.-> DREAMS
+    HMCP <--> CONCLUSIONS
+
+    style AGENT fill:#11151c,stroke:#e6a855,color:#e6edf3
+    style OHMCP fill:#1f3150,stroke:#bc8cff,color:#e6edf3
+    style HMCP fill:#162030,stroke:#bc8cff,color:#e6edf3
+    style PLUGIN fill:#1f3150,stroke:#3d6ea5,color:#e6edf3
+    style VAULT fill:#162030,stroke:#3d6ea5,color:#e6edf3
+    style SESSIONS fill:#162030,stroke:#7ee6a8,color:#e6edf3
+    style CONCLUSIONS fill:#162030,stroke:#e6a855,color:#e6edf3
+    style DREAMS fill:#11151c,stroke:#bc8cff,color:#e6edf3
+    style MCP_LAYER fill:#0b0e14,stroke:#21262d,color:#6e7681
+    style LOCAL fill:#0b0e14,stroke:#21262d,color:#6e7681
+    style HONCHO fill:#0b0e14,stroke:#21262d,color:#6e7681
   </div>
 
   <h3>Components</h3>
@@ -448,20 +469,9 @@ flowchart TD
     </table>
   </div>
 
-  <hr style="border-style: dotted; border-color: var(--border); margin: 1.5rem 0;">
-
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Component</th><th>Role</th><th>Runs Where</th></tr></thead>
-      <tbody>
-        <tr><td><strong>Obsidian CLI</strong> <span class="badge badge-todo">OPTIONAL</span></td><td>Agent entry point. You are the peer. Your notes are your &ldquo;messages&rdquo; &mdash; not conversational messages, but vault content uploaded as messages in the Honcho architecture. Each note becomes a session with paired messages (document context + body) linked by a shared <code>turn_id</code>.</td><td>Local process (Bun)</td></tr>
-      </tbody>
-    </table>
-  </div>
-
   <h3>Single-Peer Model</h3>
 
-  <p>The system collapses Honcho's observer/observed peer architecture to a single peer. You are the peer. Your notes are your messages. Honcho observes you and derives conclusions about your thinking, knowledge structure, and patterns. The peer configuration is <code>{ observe_me: true }</code> -- Honcho watches what you write and builds understanding from it.</p>
+  <p>The system collapses Honcho's observer/observed peer architecture to a single peer. You are the peer. Each note becomes its own session with a pair of linked messages &mdash; document context and body &mdash; attributed to you. Honcho observes those messages and derives conclusions about your thinking, knowledge structure, and patterns. The peer configuration is <code>{ observe_me: true }</code> &mdash; Honcho watches what you write and builds understanding from it.</p>
 </section>
 
 <!-- =============== STANDALONE =============== -->
@@ -471,6 +481,12 @@ flowchart TD
   <p><strong>What you need:</strong> Obsidian + the plugin + a Honcho API key.</p>
 
   <p>The plugin alone turns your vault into a persistent identity source. No agents, no MCP servers, no CLI tools. You write notes in Obsidian. The plugin sends them to Honcho. Honcho learns.</p>
+
+  <h3>Installation</h3>
+  <ul>
+    <li><strong>Community plugins (coming soon):</strong> Settings &rarr; Community Plugins &rarr; Browse &rarr; search &ldquo;Honcho&rdquo; &rarr; Install &rarr; Enable.</li>
+    <li><strong>Manual install:</strong> Clone <a href="https://github.com/plastic-labs/obsidian-honcho">plastic-labs/obsidian-honcho</a>, run <code>bun install && bun run build</code>, then copy <code>main.js</code>, <code>manifest.json</code>, and <code>styles.css</code> into your vault&rsquo;s <code>.obsidian/plugins/obsidian-honcho/</code> directory. Restart Obsidian and enable the plugin under Settings &rarr; Community Plugins.</li>
+  </ul>
 
   <h3>What the Plugin Does</h3>
   <ul>
@@ -710,6 +726,228 @@ flowchart TD
 
   <h3>Full Stack (Setup 2 + Generic Honcho MCP)</h3>
   <p>Add the generic Honcho MCP alongside the Obsidian-Honcho MCP in your agent's configuration. The generic MCP is available at <code>mcp.honcho.dev</code> and provides workspace-agnostic operations: semantic search, chat, and conclusion creation.</p>
+</section>
+
+<!-- =============== DEMOS =============== -->
+<section id="demos">
+  <h2>Demo &amp; Autonomous Examples</h2>
+
+  <h3>Basic Demo: Ingest &rarr; Observe &rarr; Query</h3>
+
+  <p>You have a note called <code>design-philosophy.md</code>:</p>
+
+  <pre><code><span class="cm">---</span>
+<span class="key">tags</span>: <span class="str">[design, principles]</span>
+<span class="key">aliases</span>: <span class="str">[aesthetic framework]</span>
+<span class="cm">---</span>
+
+<span class="cm"># Design Philosophy</span>
+
+I believe interfaces should be honest. No decoration pretending to be function.
+Precision is non-negotiable -- if something is 2px off, it's wrong. I prefer
+sustained attention over novelty: build for the hundredth session, not the first.
+
+Typography hierarchy matters. Monospace for structure, serif for prose.
+Dark-first. Low contrast, high legibility. Sharp edges communicate precision.
+</code></pre>
+
+  <p>Right-click &rarr; <strong>Ingest to Honcho</strong>. The plugin sends 2 messages to session <code>obsidian-file-design-philosophy</code>:</p>
+
+  <div class="compare">
+    <div class="compare-card">
+      <h4>Message 1: Document Context</h4>
+      <pre style="font-size: 0.78rem; margin-bottom: 0;"><code>[Document Observation]
+Title: design-philosophy
+Folder: /
+Tags: design, principles
+Aliases: aesthetic framework
+Links to: (none)
+Referenced by: ui-components, portfolio
+Graph position: connected
+Backlink count: 2
+Structure: # Design Philosophy
+Modified: 2026-02-24</code></pre>
+    </div>
+    <div class="compare-card after">
+      <h4>Message 2: Full Body</h4>
+      <pre style="font-size: 0.78rem; margin-bottom: 0;"><code>I believe interfaces should be
+honest. No decoration pretending
+to be function. Precision is
+non-negotiable -- if something
+is 2px off, it's wrong...
+
+(full note content, frontmatter
+and ## Honcho sections stripped)</code></pre>
+    </div>
+  </div>
+
+  <p>Honcho observes. Over time &mdash; and especially after dreaming &mdash; it derives conclusions:</p>
+
+  <pre><code><span class="cm">// Example conclusions Honcho might derive:</span>
+
+<span class="str">"User has a strong preference for honest interfaces -- no decoration
+ that pretends to be function. This is a core design principle, not
+ a situational preference."</span>
+
+<span class="str">"User enforces precision at the pixel level. 2px tolerance. This
+ suggests engineering-grade attention to visual detail."</span>
+
+<span class="str">"User's typography system is structural: monospace = hierarchy and
+ navigation, serif = dense readable content. This is a deliberate
+ cognitive mapping, not arbitrary font choice."</span></code></pre>
+
+  <p>Now any agent with Honcho access &mdash; in Cursor, Claude Code, or through the MCP &mdash; can query these conclusions. The identity follows you across surfaces.</p>
+
+  <hr>
+
+  <h3>Autonomous Examples</h3>
+
+  <p>These are real workflows the MCP tools support. Each one is an agent operating autonomously over your vault and Honcho identity.</p>
+
+  <h4>1. Knowledge Gardening</h4>
+  <p>An agent audits your vault's structural health and fixes it.</p>
+  <pre><code><span class="cm">// Agent's internal reasoning:</span>
+
+<span class="cm">// Step 1: Survey the vault</span>
+<span class="kw">vault_graph</span>({ include: [<span class="str">"orphans"</span>, <span class="str">"dead_ends"</span>, <span class="str">"unresolved"</span>] })
+
+<span class="cm">// Discovers:</span>
+<span class="cm">//   12 orphan notes (no incoming or outgoing links)</span>
+<span class="cm">//   8 dead-end notes (linked to, but link to nothing)</span>
+<span class="cm">//   23 unresolved wikilinks (references to notes that don't exist)</span>
+
+<span class="cm">// Step 2: Check Honcho's understanding of each orphan</span>
+<span class="kw">vault_reflect</span>({ file: <span class="str">"orphaned-note.md"</span> })
+
+<span class="cm">// Honcho returns conclusions about this note's content and</span>
+<span class="cm">// semantically related conclusions from other sessions --</span>
+<span class="cm">// revealing connections the vault's link structure missed.</span>
+
+<span class="cm">// Step 3: Create an index note that bridges the gaps</span>
+<span class="kw">vault_write</span>({
+  action: <span class="str">"create"</span>,
+  file: <span class="str">"maps/design-system-map.md"</span>,
+  content: <span class="str">`# Design System Map\n\nConnecting related notes...\n\n`</span>
+    + <span class="str">`- [[design-philosophy]] -- core principles\n`</span>
+    + <span class="str">`- [[typography-hierarchy]] -- font system\n`</span>
+    + <span class="str">`- [[color-tokens]] -- variable architecture\n`</span>
+})
+
+<span class="cm">// Step 4: Suggest tags for unclassified notes</span>
+<span class="kw">vault_classify</span>({ file: <span class="str">"orphaned-note.md"</span>, scope: <span class="str">"tags"</span> })</code></pre>
+
+  <div class="callout">
+    <strong>What makes this autonomous</strong> &mdash; The agent doesn't just list problems. It uses Honcho's semantic understanding to discover connections that aren't explicit in the vault's link graph, then makes structural changes to surface them.
+  </div>
+
+  <h4>2. Cross-Surface Intelligence</h4>
+  <p>You write about an idea in Obsidian. Later, an agent in a completely different context already knows your thinking.</p>
+  <pre><code><span class="cm">// In Obsidian, you write a note about state management:</span>
+<span class="cm">//</span>
+<span class="cm">//   "I prefer explicit state machines over implicit state.</span>
+<span class="cm">//    Redux is too much ceremony. Context API loses traceability.</span>
+<span class="cm">//    XState hits the sweet spot -- formal enough to reason about,</span>
+<span class="cm">//    practical enough to ship."</span>
+<span class="cm">//</span>
+<span class="cm">// Plugin auto-syncs. Honcho observes and concludes.</span>
+
+<span class="cm">// Three days later, in Cursor, you're building a checkout flow.</span>
+<span class="cm">// The Cursor agent (cursor-honcho) queries your identity:</span>
+
+honcho.chat(<span class="str">"What does this user prefer for state management?"</span>)
+
+<span class="cm">// Response:</span>
+<span class="str">"Based on their documented thinking: explicit state machines,</span>
+<span class="str"> specifically XState. They find Redux too ceremonial and</span>
+<span class="str"> Context API insufficiently traceable. They value formalism</span>
+<span class="str"> that remains practical to ship."</span>
+
+<span class="cm">// The agent writes XState-based checkout logic without asking.</span>
+<span class="cm">// Your vault note became a persistent engineering preference.</span></code></pre>
+
+  <h4>3. Reflective Synthesis</h4>
+  <p>An agent reads your recent daily notes and synthesizes patterns you haven't explicitly connected.</p>
+  <pre><code><span class="cm">// Step 1: Read the last 7 daily notes</span>
+<span class="kw">vault_list</span>({ folder: <span class="str">"daily"</span> })
+<span class="cm">// Returns: daily/2026-02-18.md through daily/2026-02-24.md</span>
+
+<span class="cm">// Step 2: For each, get Honcho's accumulated perspective</span>
+<span class="kw">vault_reflect</span>({ file: <span class="str">"daily/2026-02-24.md"</span> })
+<span class="kw">vault_reflect</span>({ file: <span class="str">"daily/2026-02-23.md"</span> })
+<span class="cm">// ... etc</span>
+
+<span class="cm">// Step 3: Query cross-session patterns via generic Honcho MCP</span>
+honcho.search(<span class="str">"recurring themes from the past week"</span>)
+
+<span class="cm">// Honcho surfaces:</span>
+<span class="str">"Three of seven daily notes reference 'simplification' in different</span>
+<span class="str"> contexts -- codebase architecture, personal workflow, and a book</span>
+<span class="str"> note about essentialism. This pattern suggests the user is in an</span>
+<span class="str"> active phase of stripping complexity across multiple domains."</span>
+
+<span class="cm">// Step 4: Append a synthesis to today's daily note</span>
+<span class="kw">vault_write</span>({
+  action: <span class="str">"append"</span>,
+  file: <span class="str">"daily/2026-02-24.md"</span>,
+  content: <span class="str">`\n## Weekly Pattern\n\nSimplification is the throughline...`</span>
+})</code></pre>
+
+  <h4>4. Identity-Grounded Code Review</h4>
+  <p>An agent reviews a PR, but grounds its feedback in your documented standards &mdash; not generic best practices.</p>
+  <pre><code><span class="cm">// Agent receives a diff for review. Before commenting, it checks</span>
+<span class="cm">// your identity for relevant preferences:</span>
+
+honcho.chat(<span class="str">"What are this user's CSS and UI standards?"</span>)
+
+<span class="cm">// Honcho returns conclusions derived from your vault notes:</span>
+<span class="str">"Never use Tailwind arbitrary color values. Always CSS custom</span>
+<span class="str"> properties. 0px border-radius on structural elements. Dark-first.</span>
+<span class="str"> 8px base spacing unit. No decorative shadows."</span>
+
+<span class="cm">// The agent flags: "Line 42 uses bg-[#1a1a1a] -- your documented</span>
+<span class="cm">// standard requires CSS variables. Should be bg-surface or similar."</span>
+<span class="cm">//</span>
+<span class="cm">// Line 87 uses border-radius: 8px on a card component --</span>
+<span class="cm">// your design philosophy specifies 0px on structural elements.</span>
+<span class="cm">//</span>
+<span class="cm">// This isn't generic lint. It's YOUR standards, enforced.</span></code></pre>
+
+  <h4>5. Autonomous Research Assistant</h4>
+  <p>You start writing a note. An agent notices and proactively surfaces relevant context from your own prior thinking.</p>
+  <pre><code><span class="cm">// You create a new note: "agent-memory-architecture.md"</span>
+<span class="cm">// You write the first paragraph. Auto-sync triggers.</span>
+
+<span class="cm">// An agent (watching for new sessions) acts:</span>
+
+<span class="cm">// Step 1: Read what you've written so far</span>
+<span class="kw">vault_read</span>({ file: <span class="str">"agent-memory-architecture.md"</span> })
+
+<span class="cm">// Step 2: Search your vault for related prior work</span>
+<span class="kw">vault_search</span>({ query: <span class="str">"memory architecture persistent context"</span> })
+<span class="cm">// Finds: honcho-notes.md, context-window-limits.md, identity-systems.md</span>
+
+<span class="cm">// Step 3: Get Honcho's cross-session understanding</span>
+honcho.search(<span class="str">"user's thinking about agent memory and persistence"</span>)
+
+<span class="cm">// Step 4: Check graph connections</span>
+<span class="kw">vault_info</span>({ file: <span class="str">"agent-memory-architecture.md"</span> })
+<span class="cm">// Graph position: orphan (no links yet)</span>
+
+<span class="cm">// Step 5: Write a research brief into the note</span>
+<span class="kw">vault_write</span>({
+  action: <span class="str">"append"</span>,
+  file: <span class="str">"agent-memory-architecture.md"</span>,
+  content: <span class="str">`\n## Prior Work in This Vault\n\n`</span>
+    + <span class="str">`- [[honcho-notes]] -- your earlier thinking on Honcho's model\n`</span>
+    + <span class="str">`- [[context-window-limits]] -- constraints you documented\n`</span>
+    + <span class="str">`- [[identity-systems]] -- related architecture patterns\n\n`</span>
+    + <span class="str">`Honcho's accumulated view: you've been converging on the idea\n`</span>
+    + <span class="str">`that memory should be structured as observations, not logs...\n`</span>
+})</code></pre>
+
+  <div class="callout success">
+    <strong>The pattern across all of these</strong> &mdash; The vault provides structure. Honcho provides understanding. The agent provides action. None of them work this well alone. Together, the agent has access to your actual thinking, not a blank slate and not a generic persona &mdash; <em>your</em> documented knowledge, <em>your</em> derived patterns, <em>your</em> organizational structure.
+  </div>
 </section>
 
 <!-- =============== STATUS =============== -->

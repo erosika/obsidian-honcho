@@ -1,8 +1,64 @@
-import { ItemView, MarkdownRenderer, TFile, type WorkspaceLeaf } from "obsidian";
+import { ItemView, MarkdownRenderer, type WorkspaceLeaf } from "obsidian";
 import type HonchoPlugin from "../main";
 import { findStaleNotes } from "../utils/sync-status";
 
 export const HONCHO_VIEW_TYPE = "honcho-sidebar";
+
+// ---------------------------------------------------------------------------
+// Peer card item grouping
+// ---------------------------------------------------------------------------
+
+interface CardGroup {
+	key: string;
+	label: string;
+	items: string[];
+	cls: string;
+	collapsed: boolean;
+}
+
+const CARD_PREFIXES: Array<{ prefix: string; key: string; label: string; cls: string }> = [
+	{ prefix: "PATTERN:", key: "pattern", label: "Patterns", cls: "honcho-group-pattern" },
+	{ prefix: "TRAIT:", key: "trait", label: "Traits", cls: "honcho-group-trait" },
+	{ prefix: "PREFERENCE:", key: "preference", label: "Preferences", cls: "honcho-group-preference" },
+];
+
+function groupCardItems(items: string[]): CardGroup[] {
+	const groups: Map<string, CardGroup> = new Map();
+
+	// General group for items without a prefix
+	groups.set("general", {
+		key: "general",
+		label: "Identity",
+		items: [],
+		cls: "honcho-group-general",
+		collapsed: false,
+	});
+
+	for (const { key, label, cls } of CARD_PREFIXES) {
+		groups.set(key, { key, label, items: [], cls, collapsed: true });
+	}
+
+	for (const item of items) {
+		let matched = false;
+		for (const { prefix, key } of CARD_PREFIXES) {
+			if (item.startsWith(prefix)) {
+				groups.get(key)!.items.push(item.slice(prefix.length).trim());
+				matched = true;
+				break;
+			}
+		}
+		if (!matched) {
+			groups.get("general")!.items.push(item);
+		}
+	}
+
+	// Return only non-empty groups, general first
+	return Array.from(groups.values()).filter((g) => g.items.length > 0);
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar View
+// ---------------------------------------------------------------------------
 
 export class HonchoSidebarView extends ItemView {
 	private plugin: HonchoPlugin;
@@ -64,15 +120,16 @@ export class HonchoSidebarView extends ItemView {
 			return;
 		}
 
-		// Connection status
-		const statusEl = header.createDiv({ cls: "honcho-status" });
-		statusEl.createSpan({ text: "Checking...", cls: "honcho-status-text" });
+		// Connection status + refresh
+		const headerRight = header.createDiv({ cls: "honcho-header-right" });
+		const statusEl = headerRight.createDiv({ cls: "honcho-status" });
+		statusEl.createSpan({ text: "Checking\u2026", cls: "honcho-status-text" });
 
-		// Refresh button
-		const refreshBtn = header.createEl("button", {
-			text: "Refresh",
-			cls: "honcho-refresh-btn",
+		const refreshBtn = headerRight.createEl("button", {
+			cls: "honcho-refresh-btn clickable-icon",
+			attr: { "aria-label": "Refresh" },
 		});
+		refreshBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>`;
 		refreshBtn.addEventListener("click", () => {
 			this.connectionCache = null;
 			this.staleCountCache = null;
@@ -81,7 +138,7 @@ export class HonchoSidebarView extends ItemView {
 
 		// Body
 		const body = el.createDiv({ cls: "honcho-sidebar-body" });
-		body.createEl("p", { text: "Loading...", cls: "honcho-loading" });
+		body.createEl("p", { text: "Loading\u2026", cls: "honcho-loading" });
 
 		try {
 			const workspaceId = this.plugin.getWorkspaceId();
@@ -96,8 +153,10 @@ export class HonchoSidebarView extends ItemView {
 				this.connectionCache = { ok, ts: Date.now() };
 			}
 			statusEl.empty();
-			const dot = statusEl.createSpan({ cls: ok ? "honcho-dot-ok" : "honcho-dot-err" });
-			dot.setText(ok ? "\u25CF" : "\u25CF");
+			statusEl.createSpan({
+				cls: ok ? "honcho-dot-ok" : "honcho-dot-err",
+				text: "\u25CF",
+			});
 			statusEl.createSpan({
 				text: ok ? " Connected" : " Disconnected",
 				cls: "honcho-status-text",
@@ -123,20 +182,22 @@ export class HonchoSidebarView extends ItemView {
 
 			body.empty();
 
-			// Peer card section
+			// Sync status -- first, always visible
+			await this.renderSyncStatus(body);
+
+			// Peer card -- grouped by type
 			if (contextResp.peer_card && contextResp.peer_card.length > 0) {
-				const cardSection = body.createDiv({ cls: "honcho-section" });
-				cardSection.createEl("h4", { text: "Peer Card" });
-				const cardList = cardSection.createEl("ul", { cls: "honcho-card-list" });
-				for (const item of contextResp.peer_card) {
-					cardList.createEl("li", { text: item });
+				const groups = groupCardItems(contextResp.peer_card);
+				for (const group of groups) {
+					this.renderCardGroup(body, group);
 				}
 			}
 
-			// Representation section (static, loaded once)
+			// Representation section
 			if (contextResp.representation) {
 				const repSection = body.createDiv({ cls: "honcho-section" });
-				repSection.createEl("h4", { text: "Representation" });
+				const repHeader = repSection.createDiv({ cls: "honcho-section-header" });
+				repHeader.createEl("h4", { text: "Representation" });
 				const repContent = repSection.createDiv({ cls: "honcho-representation" });
 				await MarkdownRenderer.render(
 					this.app,
@@ -146,9 +207,6 @@ export class HonchoSidebarView extends ItemView {
 					this
 				);
 			}
-
-			// Sync status section
-			this.renderSyncStatus(body);
 
 			if (
 				(!contextResp.peer_card || contextResp.peer_card.length === 0) &&
@@ -169,12 +227,44 @@ export class HonchoSidebarView extends ItemView {
 	}
 
 	// ---------------------------------------------------------------------------
+	// Card group rendering
+	// ---------------------------------------------------------------------------
+
+	private renderCardGroup(parent: HTMLElement, group: CardGroup): void {
+		const section = parent.createDiv({ cls: `honcho-section honcho-card-group ${group.cls}` });
+
+		if (group.collapsed) {
+			// Collapsible group (patterns, traits, preferences)
+			const details = section.createEl("details");
+			const summary = details.createEl("summary", { cls: "honcho-group-summary" });
+			summary.createEl("h4", { text: group.label });
+			summary.createSpan({
+				text: String(group.items.length),
+				cls: "honcho-group-count",
+			});
+			const list = details.createEl("ul", { cls: "honcho-card-list" });
+			for (const item of group.items) {
+				list.createEl("li", { text: item });
+			}
+		} else {
+			// Open group (general/identity)
+			const header = section.createDiv({ cls: "honcho-section-header" });
+			header.createEl("h4", { text: group.label });
+			const list = section.createEl("ul", { cls: "honcho-card-list" });
+			for (const item of group.items) {
+				list.createEl("li", { text: item });
+			}
+		}
+	}
+
+	// ---------------------------------------------------------------------------
 	// Sync status
 	// ---------------------------------------------------------------------------
 
 	private async renderSyncStatus(parent: HTMLElement): Promise<void> {
 		const section = parent.createDiv({ cls: "honcho-section honcho-sync-status-section" });
-		section.createEl("h4", { text: "Sync Status" });
+		const header = section.createDiv({ cls: "honcho-section-header" });
+		header.createEl("h4", { text: "Sync Status" });
 		const statusEl = section.createDiv({ cls: "honcho-sync-status-body" });
 
 		try {
@@ -183,7 +273,7 @@ export class HonchoSidebarView extends ItemView {
 			if (this.staleCountCache && Date.now() - this.staleCountCache.ts < HonchoSidebarView.STALE_CACHE_TTL) {
 				count = this.staleCountCache.count;
 			} else {
-				statusEl.createSpan({ text: "Checking...", cls: "honcho-loading" });
+				statusEl.createSpan({ text: "Checking\u2026", cls: "honcho-loading" });
 				const stale = await findStaleNotes(this.app);
 				count = stale.length;
 				this.staleCountCache = { count, ts: Date.now() };
