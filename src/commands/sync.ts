@@ -1,5 +1,6 @@
 import { type App, Notice, TFile, normalizePath } from "obsidian";
 import type { HonchoClient, ConclusionResponse } from "../honcho-client";
+import { stripForIngestion } from "../utils/sync-status";
 
 interface SyncContext {
 	app: App;
@@ -154,13 +155,7 @@ export async function pullConclusions(
  */
 export async function pushPeerCardFromNote(ctx: SyncContext, file: TFile): Promise<void> {
 	const content = await ctx.app.vault.cachedRead(file);
-
-	// Strip frontmatter
-	let body = content;
-	const fmMatch = body.match(/^---\n[\s\S]*?\n---\n?/);
-	if (fmMatch) {
-		body = body.slice(fmMatch[0].length);
-	}
+	const body = stripForIngestion(content);
 
 	// Parse lines: treat bullet points as card items, skip empty lines and headings
 	const items: string[] = [];
@@ -183,20 +178,6 @@ export async function pushPeerCardFromNote(ctx: SyncContext, file: TFile): Promi
 
 	await ctx.client.setPeerCard(ctx.workspaceId, ctx.peerId, items);
 	new Notice(`Pushed ${items.length} items to peer card`);
-}
-
-/**
- * Pull session summaries for a given session and return them.
- */
-export async function getSessionSummary(
-	ctx: SyncContext,
-	sessionId: string
-): Promise<{ short: string | null; long: string | null }> {
-	const resp = await ctx.client.getSessionSummaries(ctx.workspaceId, sessionId);
-	return {
-		short: resp.short_summary,
-		long: resp.long_summary,
-	};
 }
 
 export function createSyncContext(

@@ -11,6 +11,9 @@ esbuild
 		external: [
 			"obsidian",
 			"electron",
+			"fs",
+			"path",
+			"os",
 			"@codemirror/autocomplete",
 			"@codemirror/collab",
 			"@codemirror/commands",

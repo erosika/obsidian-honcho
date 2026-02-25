@@ -1,15 +1,13 @@
 import { type App, Notice, TFile, TFolder } from "obsidian";
 import type { HonchoClient, MessageResponse, SessionConfiguration } from "../honcho-client";
-import { chunkMarkdown } from "../utils/chunker";
 import { writeHonchoFrontmatter, normalizeFrontmatterTags } from "../utils/frontmatter";
-import { checkSyncStatus, partitionByStatus, stripFrontmatter, computeContentHash } from "../utils/sync-status";
+import { checkSyncStatus, partitionByStatus, stripForIngestion, computeContentHash, generateTurnId } from "../utils/sync-status";
 
 export interface IngestContext {
 	app: App;
 	client: HonchoClient;
 	workspaceId: string;
-	observerPeerId: string;
-	observedPeerId: string;
+	peerId: string;
 	trackFrontmatter: boolean;
 }
 
@@ -25,9 +23,15 @@ export interface IngestResult {
 
 /**
  * Deterministic session IDs scoped by source type.
+ * API requires ^[a-zA-Z0-9_-]+$ so we encode the path.
  */
 function sessionIdForFile(file: TFile): string {
-	return `obsidian:file:${file.path}`;
+	// Replace non-alphanumeric chars with dashes, collapse runs, trim edges
+	const slug = file.path
+		.replace(/\.md$/, "")
+		.replace(/[^a-zA-Z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "");
+	return `obsidian-file-${slug}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -46,6 +50,9 @@ interface StructuralContext {
 	folder: string;
 	created: string;
 	modified: string;
+	aliases: string[];
+	/** Custom frontmatter properties (excludes Obsidian/Honcho internal keys) */
+	properties: Record<string, unknown>;
 }
 
 function extractStructuralContext(app: App, file: TFile): StructuralContext {
@@ -94,20 +101,56 @@ function extractStructuralContext(app: App, file: TFile): StructuralContext {
 	// Folder path
 	const folder = file.parent?.path ?? "/";
 
+	// Aliases
+	const aliases: string[] = Array.isArray(cache?.frontmatter?.aliases)
+		? cache!.frontmatter!.aliases.map(String)
+		: typeof cache?.frontmatter?.aliases === "string"
+			? [cache!.frontmatter!.aliases]
+			: [];
+
+	// Custom frontmatter properties (strip Obsidian internals + Honcho tracking keys)
+	const INTERNAL_KEYS = new Set([
+		"tags", "aliases", "cssclass", "cssclasses", "publish", "position",
+		// Current keys
+		"synced", "session", "hash", "feedback",
+		// Legacy keys (migration)
+		"honcho_synced", "honcho_session_id", "honcho_message_count",
+		"honcho_content_hash", "honcho_feedback",
+	]);
+	const properties: Record<string, unknown> = {};
+	if (cache?.frontmatter) {
+		for (const [key, value] of Object.entries(cache.frontmatter)) {
+			if (!INTERNAL_KEYS.has(key) && value !== undefined) {
+				properties[key] = value;
+			}
+		}
+	}
+
 	// Temporal context
 	const created = new Date(file.stat.ctime).toISOString();
 	const modified = new Date(file.stat.mtime).toISOString();
 
-	return { tags, headings, outgoingLinks, backlinks, backlinkCount, isOrphan, isDeadend, unresolvedLinks, folder, created, modified };
+	return { tags, headings, outgoingLinks, backlinks, backlinkCount, isOrphan, isDeadend, unresolvedLinks, folder, created, modified, aliases, properties };
 }
 
 /**
- * Build a structural preamble that precedes the content chunks.
- * Gives Honcho's observation pipeline context about the note's
- * position in the vault's knowledge graph.
+ * Build a document context message that gives Honcho's observation pipeline
+ * structured metadata about the note's position in the vault's knowledge graph.
  */
-function buildStructuralPreamble(file: TFile, ctx: StructuralContext): string {
-	const parts: string[] = [`[Note: ${file.basename}]`];
+function buildDocumentContext(file: TFile, ctx: StructuralContext): string {
+	// Graph position label
+	const graphPosition =
+		ctx.isOrphan && ctx.isDeadend ? "isolated"
+		: ctx.isOrphan ? "orphan"
+		: ctx.isDeadend ? "dead-end"
+		: ctx.backlinkCount >= 5 ? "hub"
+		: "connected";
+
+	const parts: string[] = [
+		"[Document Observation]",
+		`Title: ${file.basename}`,
+		"Type: Obsidian vault note",
+	];
 
 	if (ctx.folder !== "/") {
 		parts.push(`Folder: ${ctx.folder}`);
@@ -115,8 +158,8 @@ function buildStructuralPreamble(file: TFile, ctx: StructuralContext): string {
 	if (ctx.tags.length > 0) {
 		parts.push(`Tags: ${ctx.tags.join(", ")}`);
 	}
-	if (ctx.headings.length > 0) {
-		parts.push(`Structure: ${ctx.headings.join(" > ")}`);
+	if (ctx.aliases.length > 0) {
+		parts.push(`Aliases: ${ctx.aliases.join(", ")}`);
 	}
 	if (ctx.outgoingLinks.length > 0) {
 		parts.push(`Links to: ${ctx.outgoingLinks.join(", ")}`);
@@ -124,25 +167,31 @@ function buildStructuralPreamble(file: TFile, ctx: StructuralContext): string {
 	if (ctx.backlinks.length > 0) {
 		parts.push(`Referenced by: ${ctx.backlinks.join(", ")}`);
 	}
+	parts.push(`Graph position: ${graphPosition}`);
 	parts.push(`Backlink count: ${ctx.backlinkCount}`);
 
-	// Graph position label
-	if (ctx.isOrphan && ctx.isDeadend) {
-		parts.push("Graph position: isolated");
-	} else if (ctx.isOrphan) {
-		parts.push("Graph position: orphan");
-	} else if (ctx.isDeadend) {
-		parts.push("Graph position: dead-end");
-	} else if (ctx.backlinkCount >= 5) {
-		parts.push("Graph position: hub");
+	// Custom frontmatter properties
+	const propEntries = Object.entries(ctx.properties);
+	if (propEntries.length > 0) {
+		for (const [key, value] of propEntries) {
+			const formatted = Array.isArray(value) ? value.join(", ") : String(value);
+			parts.push(`${key}: ${formatted}`);
+		}
 	}
 
-	if (ctx.unresolvedLinks.length > 0) {
-		parts.push(`Unresolved links: ${ctx.unresolvedLinks.join(", ")}`);
+	if (ctx.headings.length > 0) {
+		parts.push(`Structure: ${ctx.headings.join(" > ")}`);
 	}
 
 	parts.push(`Created: ${ctx.created.split("T")[0]}`);
 	parts.push(`Modified: ${ctx.modified.split("T")[0]}`);
+
+	parts.push("");
+	parts.push(
+		"This is a document from the user's personal knowledge base, not a conversational message.",
+		"Observations should focus on the user's documented thinking, knowledge structure,",
+		"and how this note relates to their broader information architecture."
+	);
 
 	return parts.join("\n");
 }
@@ -150,6 +199,9 @@ function buildStructuralPreamble(file: TFile, ctx: StructuralContext): string {
 // ---------------------------------------------------------------------------
 // Ingestion
 // ---------------------------------------------------------------------------
+
+/** Prevents concurrent ingest of the same file path. */
+const ingestLocks = new Set<string>();
 
 /**
  * Session configuration for ingested content.
@@ -164,14 +216,28 @@ function ingestSessionConfig(): SessionConfiguration {
 }
 
 /**
- * Ingest a single note with full structural context.
- * Creates a session per file, chunks content into messages with metadata,
- * and lets Honcho's observation pipeline derive conclusions.
- *
- * Checks sync status first -- returns early if content is unchanged
- * (unless force: true).
+ * Ingest a single note as exactly 2 messages: document context + full body.
+ * Creates a session per file. Checks sync status first -- returns early
+ * if content is unchanged (unless force: true).
  */
 export async function ingestNote(
+	ctx: IngestContext,
+	file: TFile,
+	opts?: IngestOptions
+): Promise<IngestResult> {
+	// Per-file lock: prevents manual + auto-sync from racing on the same file
+	if (ingestLocks.has(file.path)) {
+		return { messages: [], skipped: true, reason: "in-progress" };
+	}
+	ingestLocks.add(file.path);
+	try {
+		return await doIngestNote(ctx, file, opts);
+	} finally {
+		ingestLocks.delete(file.path);
+	}
+}
+
+async function doIngestNote(
 	ctx: IngestContext,
 	file: TFile,
 	opts?: IngestOptions
@@ -185,103 +251,84 @@ export async function ingestNote(
 	}
 
 	const content = await ctx.app.vault.cachedRead(file);
-	const chunks = chunkMarkdown(content);
+	const body = stripForIngestion(content);
 
-	if (chunks.length === 0) {
+	if (body.trim().length === 0) {
 		return { messages: [], skipped: true, reason: "empty" };
 	}
 
-	// Compute content hash for post-ingest tracking
-	const body = stripFrontmatter(content);
 	const contentHash = computeContentHash(body);
-
 	const sessionId = sessionIdForFile(file);
 	const structural = extractStructuralContext(ctx.app, file);
 
-	// Delete existing session to prevent message accumulation on re-ingest.
-	// getOrCreateSession is idempotent, so we delete first then recreate fresh.
-	try {
-		const existing = await ctx.client.getOrCreateSession(
-			ctx.workspaceId,
-			sessionId,
-			{
-				[ctx.observerPeerId]: { observe_me: false, observe_others: true },
-				[ctx.observedPeerId]: { observe_me: true, observe_others: false },
-			}
-		);
-		await ctx.client.deleteSession(ctx.workspaceId, existing.id);
-	} catch {
-		// Session may not exist yet -- that's fine
-	}
-
-	// Create fresh session
+	// Idempotent: returns existing session or creates new.
+	// No per-session peers -- observation config lives on workspace peers
+	// (set in ensureInitialized). Messages accumulate on re-ingest; Honcho
+	// sees the full history.
 	const session = await ctx.client.getOrCreateSession(
-		ctx.workspaceId,
-		sessionId,
-		{
-			[ctx.observerPeerId]: { observe_me: false, observe_others: true },
-			[ctx.observedPeerId]: { observe_me: true, observe_others: false },
-		}
+		ctx.workspaceId, sessionId
 	);
 
-	// Update session metadata + configuration
+	// Graph position label
+	const graphPosition =
+		structural.isOrphan && structural.isDeadend ? "isolated"
+		: structural.isOrphan ? "orphan"
+		: structural.isDeadend ? "dead-end"
+		: structural.backlinkCount >= 5 ? "hub"
+		: "connected";
+
+	// Trimmed session metadata
+	const sessionMeta: Record<string, unknown> = {
+		source: "obsidian",
+		source_type: "file",
+		file_path: file.path,
+		file_name: file.basename,
+		folder: structural.folder,
+		tags: structural.tags,
+		graph_position: graphPosition,
+		backlink_count: structural.backlinkCount,
+		ingested_at: new Date().toISOString(),
+	};
+
 	await ctx.client.updateSession(ctx.workspaceId, session.id, {
-		metadata: {
-			source: "obsidian",
-			source_type: "file",
-			file_path: file.path,
-			file_name: file.basename,
-			folder: structural.folder,
-			tags: structural.tags,
-			outgoing_links: structural.outgoingLinks,
-			backlinks: structural.backlinks,
-			backlink_count: structural.backlinkCount,
-			is_orphan: structural.isOrphan,
-			is_deadend: structural.isDeadend,
-			unresolved_links: structural.unresolvedLinks,
-			heading_count: structural.headings.length,
-			created_at: structural.created,
-			modified_at: structural.modified,
-			ingested_at: new Date().toISOString(),
-		},
+		metadata: sessionMeta,
 		configuration: ingestSessionConfig(),
 	});
 
-	// Build messages: structural preamble + content chunks
-	const preamble = buildStructuralPreamble(file, structural);
+	// Message 1: Document context (metadata + graph position)
+	// Message 2: Full note body (no chunking)
+	// Both share a turn_id so the pair is queryable as a unit.
+	const documentContext = buildDocumentContext(file, structural);
+	const turnId = generateTurnId(sessionId);
+
+	// Messages come from the user peer. Honcho's observe_me derives conclusions
+	// from messages sent by this peer. The document context helps classify
+	// what kind of content this is (personal note vs reference data vs dataset).
 	const messages: Array<{
 		peer_id: string;
 		content: string;
 		metadata?: Record<string, unknown>;
-		created_at?: string;
-	}> = [];
-
-	// First message: structural preamble
-	messages.push({
-		peer_id: ctx.observedPeerId,
-		content: preamble,
-		metadata: {
-			source_file: file.path,
-			message_type: "structural_context",
+	}> = [
+		{
+			peer_id: ctx.peerId,
+			content: documentContext,
+			metadata: {
+				source_file: file.path,
+				message_type: "document_context",
+				turn_id: turnId,
+			},
 		},
-		created_at: structural.created,
-	});
-
-	// Content chunks as messages from the observed peer
-	for (let i = 0; i < chunks.length; i++) {
-		messages.push({
-			peer_id: ctx.observedPeerId,
-			content: chunks[i],
+		{
+			peer_id: ctx.peerId,
+			content: body,
 			metadata: {
 				source_file: file.path,
 				source_name: file.basename,
-				chunk_index: i,
-				chunk_total: chunks.length,
 				message_type: "content",
+				turn_id: turnId,
 			},
-			created_at: structural.modified,
-		});
-	}
+		},
+	];
 
 	const created = await ctx.client.addMessages(
 		ctx.workspaceId,
@@ -291,10 +338,9 @@ export async function ingestNote(
 
 	if (ctx.trackFrontmatter) {
 		await writeHonchoFrontmatter(ctx.app, file, {
-			honcho_synced: new Date().toISOString(),
-			honcho_session_id: session.id,
-			honcho_message_count: created.length,
-			honcho_content_hash: contentHash,
+			synced: new Date().toISOString(),
+			session: session.id,
+			hash: contentHash,
 		});
 	}
 
@@ -365,8 +411,8 @@ export async function ingestFolder(
 		try {
 			await ctx.client.scheduleDream(
 				ctx.workspaceId,
-				ctx.observerPeerId,
-				{ observed: ctx.observedPeerId }
+				ctx.peerId,
+				{ observed: ctx.peerId }
 			);
 		} catch {
 			// Dream scheduling is best-effort
@@ -434,8 +480,8 @@ export async function ingestByTag(
 		try {
 			await ctx.client.scheduleDream(
 				ctx.workspaceId,
-				ctx.observerPeerId,
-				{ observed: ctx.observedPeerId }
+				ctx.peerId,
+				{ observed: ctx.peerId }
 			);
 		} catch {
 			// Dream scheduling is best-effort
@@ -503,8 +549,8 @@ export async function ingestLinked(
 		try {
 			await ctx.client.scheduleDream(
 				ctx.workspaceId,
-				ctx.observerPeerId,
-				{ observed: ctx.observedPeerId }
+				ctx.peerId,
+				{ observed: ctx.peerId }
 			);
 		} catch {
 			// Dream scheduling is best-effort
@@ -538,9 +584,8 @@ export function createIngestContext(
 	app: App,
 	client: HonchoClient,
 	workspaceId: string,
-	observerPeerId: string,
-	observedPeerId: string,
+	peerId: string,
 	trackFrontmatter: boolean
 ): IngestContext {
-	return { app, client, workspaceId, observerPeerId, observedPeerId, trackFrontmatter };
+	return { app, client, workspaceId, peerId, trackFrontmatter };
 }

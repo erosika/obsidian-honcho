@@ -1,6 +1,7 @@
 import { Notice, Plugin, TFile, TFolder, type WorkspaceLeaf } from "obsidian";
 import { HonchoClient } from "./honcho-client";
 import { DEFAULT_SETTINGS, HonchoSettingTab, type HonchoPluginSettings } from "./settings";
+import { loadGlobalDefaults, saveGlobalConfig } from "./global-config";
 import { HONCHO_VIEW_TYPE, HonchoSidebarView } from "./views/sidebar-view";
 import { HonchoChatModal } from "./views/chat-modal";
 import { SessionManagerModal } from "./views/session-manager";
@@ -8,6 +9,7 @@ import { StaleNotesModal } from "./views/stale-notes-modal";
 import { HonchoSearchModal } from "./commands/search";
 import { createIngestContext, ingestNote, ingestFolder, ingestByTag, ingestLinked } from "./commands/ingest";
 import { createSyncContext, generateIdentityNote, pullConclusions, pushPeerCardFromNote } from "./commands/sync";
+import { createFeedbackContext, writeFeedback } from "./commands/feedback";
 import type { NoteContext } from "./views/chat-modal";
 import { matchesSyncFilters, normalizeFrontmatterTags, readHonchoFrontmatter } from "./utils/frontmatter";
 import { registerHonchoCodeBlock } from "./views/post-processor";
@@ -18,11 +20,13 @@ export default class HonchoPlugin extends Plugin {
 	private client: HonchoClient | null = null;
 	private syncQueue: SyncQueue | null = null;
 	private initialized = false;
+	private initPromise: Promise<{ client: HonchoClient; workspaceId: string; peerId: string }> | null = null;
 	/** Files currently being ingested -- suppresses re-entrant modify events */
 	private ingestingPaths = new Set<string>();
+	/** Files currently receiving feedback writes -- suppresses re-entrant modify events */
+	private writingFeedbackPaths = new Set<string>();
 	private workspaceId = "";
 	private peerId = "";
-	private observedPeerId = "";
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -140,6 +144,18 @@ export default class HonchoPlugin extends Plugin {
 			callback: () => this.openStaleNotes(),
 		});
 
+		this.addCommand({
+			id: "update-feedback",
+			name: "Update Honcho feedback",
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file) return false;
+				if (checking) return true;
+				this.runUpdateFeedback(file);
+				return true;
+			},
+		});
+
 		// -- Settings tab --
 		this.addSettingTab(new HonchoSettingTab(this.app, this));
 
@@ -185,19 +201,26 @@ export default class HonchoPlugin extends Plugin {
 		);
 
 		// -- Auto-sync on save --
-		this.syncQueue = new SyncQueue(this.app, (file) => this.runIngest(file, true));
+		const minSyncMs = this.settings.minSyncInterval * 60 * 1000;
+		this.syncQueue = new SyncQueue(this.app, (file) => this.runIngest(file, true), minSyncMs);
+
+		// Suppress auto-sync for 30s after load to let Obsidian settle
+		let startupReady = false;
+		setTimeout(() => { startupReady = true; }, 30_000);
 
 		this.registerEvent(
 			this.app.vault.on("modify", (file) => {
 				if (
+					!startupReady ||
 					!this.settings.autoSync ||
 					!(file instanceof TFile) ||
 					file.extension !== "md"
 				) {
 					return;
 				}
-				// Skip files currently being written to by our own ingest
+				// Skip files currently being written to by our own ingest or feedback
 				if (this.ingestingPaths.has(file.path)) return;
+				if (this.writingFeedbackPaths.has(file.path)) return;
 
 				if (!matchesSyncFilters(
 					this.app,
@@ -283,13 +306,39 @@ export default class HonchoPlugin extends Plugin {
 	// -----------------------------------------------------------------------
 
 	async loadSettings(): Promise<void> {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		// Layer: DEFAULT_SETTINGS < ~/.honcho/config.json < local data.json
+		// Global config provides shared API key, peer name, and host-specific workspace.
+		// Local plugin settings (Obsidian UI) override everything.
+		const global = loadGlobalDefaults();
+		const globalOverrides: Partial<HonchoPluginSettings> = {};
+		if (global.apiKey) globalOverrides.apiKey = global.apiKey;
+		if (global.peerName) globalOverrides.peerName = global.peerName;
+		if (global.workspace) globalOverrides.workspaceName = global.workspace;
+		if (global.baseUrl) globalOverrides.baseUrl = global.baseUrl;
+
+		const local = await this.loadData();
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, globalOverrides, local);
 	}
 
 	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
 		this.client = null; // rebuild on next access
 		this.initialized = false;
+		this.initPromise = null;
+		// Update sync queue interval if it changed
+		if (this.syncQueue) {
+			this.syncQueue.setMinSyncInterval(this.settings.minSyncInterval * 60 * 1000);
+		}
+		// Sync shared fields + obsidian host block back to ~/.honcho/config.json
+		// so other plugins (cursor-honcho, claude-honcho) see the same identity.
+		if (this.settings.apiKey) {
+			saveGlobalConfig({
+				apiKey: this.settings.apiKey,
+				peerName: this.settings.peerName,
+				workspace: this.settings.workspaceName || this.app.vault.getName(),
+				baseUrl: this.settings.baseUrl,
+			});
+		}
 	}
 
 	// -----------------------------------------------------------------------
@@ -317,39 +366,50 @@ export default class HonchoPlugin extends Plugin {
 		return this.settings.peerName || "obsidian";
 	}
 
-	getObservedPeerId(): string {
-		return this.settings.observedPeerName || this.getPeerId();
-	}
-
 	/**
 	 * Ensure workspace + peer exist in Honcho. Called lazily before operations.
+	 * Uses a promise lock to prevent concurrent callers from racing.
 	 */
-	private async ensureInitialized(): Promise<{
+	private ensureInitialized(): Promise<{
 		client: HonchoClient;
 		workspaceId: string;
 		peerId: string;
-		observedPeerId: string;
 	}> {
 		const client = this.getClient();
-		if (!client) throw new Error("Configure your API key in Honcho settings");
+		if (!client) return Promise.reject(new Error("Configure your API key in Honcho settings"));
 
-		const workspaceId = this.getWorkspaceId();
-		const peerId = this.getPeerId();
-		const observedPeerId = this.getObservedPeerId();
-
-		if (!this.initialized) {
-			await client.getOrCreateWorkspace(workspaceId);
-			await client.getOrCreatePeer(workspaceId, peerId, { observe_me: peerId === observedPeerId });
-			if (observedPeerId !== peerId) {
-				await client.getOrCreatePeer(workspaceId, observedPeerId, { observe_me: true });
-			}
-			this.workspaceId = workspaceId;
-			this.peerId = peerId;
-			this.observedPeerId = observedPeerId;
-			this.initialized = true;
+		if (this.initialized) {
+			return Promise.resolve({
+				client,
+				workspaceId: this.workspaceId,
+				peerId: this.peerId,
+			});
 		}
 
-		return { client, workspaceId: this.workspaceId, peerId: this.peerId, observedPeerId: this.observedPeerId };
+		// Serialize: all concurrent callers share the same in-flight promise
+		if (!this.initPromise) {
+			this.initPromise = this.doInitialize(client).finally(() => {
+				this.initPromise = null;
+			});
+		}
+		return this.initPromise;
+	}
+
+	private async doInitialize(client: HonchoClient): Promise<{
+		client: HonchoClient;
+		workspaceId: string;
+		peerId: string;
+	}> {
+		const workspaceId = this.getWorkspaceId();
+		const peerId = this.getPeerId();
+
+		await client.getOrCreateWorkspace(workspaceId);
+		await client.getOrCreatePeer(workspaceId, peerId, { observe_me: true });
+		this.workspaceId = workspaceId;
+		this.peerId = peerId;
+		this.initialized = true;
+
+		return { client, workspaceId, peerId };
 	}
 
 	// -----------------------------------------------------------------------
@@ -377,9 +437,9 @@ export default class HonchoPlugin extends Plugin {
 	private async runIngest(file: TFile, silent = false): Promise<void> {
 		this.ingestingPaths.add(file.path);
 		try {
-			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
+			const { client, workspaceId, peerId } = await this.ensureInitialized();
 			const ctx = createIngestContext(
-				this.app, client, workspaceId, peerId, observedPeerId, this.settings.trackFrontmatter
+				this.app, client, workspaceId, peerId, this.settings.trackFrontmatter
 			);
 			const result = await ingestNote(ctx, file);
 			if (!silent) {
@@ -399,9 +459,9 @@ export default class HonchoPlugin extends Plugin {
 
 	private async runIngestLinked(file: TFile): Promise<void> {
 		try {
-			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
+			const { client, workspaceId, peerId } = await this.ensureInitialized();
 			const ctx = createIngestContext(
-				this.app, client, workspaceId, peerId, observedPeerId, this.settings.trackFrontmatter
+				this.app, client, workspaceId, peerId, this.settings.trackFrontmatter
 			);
 			const result = await ingestLinked(ctx, file, this.settings.linkDepth);
 			const parts = [`${result.ingested} ingested`];
@@ -414,9 +474,9 @@ export default class HonchoPlugin extends Plugin {
 
 	private async runIngestFolder(folder: TFolder): Promise<void> {
 		try {
-			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
+			const { client, workspaceId, peerId } = await this.ensureInitialized();
 			const ctx = createIngestContext(
-				this.app, client, workspaceId, peerId, observedPeerId, this.settings.trackFrontmatter
+				this.app, client, workspaceId, peerId, this.settings.trackFrontmatter
 			);
 			const progressNotice = new Notice(`${folder.name}: scanning...`, 0);
 			const result = await ingestFolder(ctx, folder, (done, total) => {
@@ -513,9 +573,9 @@ export default class HonchoPlugin extends Plugin {
 
 		new TagPicker(this.app, tags, async (tag) => {
 			try {
-				const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
+				const { client, workspaceId, peerId } = await this.ensureInitialized();
 				const ctx = createIngestContext(
-					this.app, client, workspaceId, peerId, observedPeerId, this.settings.trackFrontmatter
+					this.app, client, workspaceId, peerId, this.settings.trackFrontmatter
 				);
 				const progressNotice = new Notice(`${tag}: scanning...`, 0);
 				const result = await ingestByTag(ctx, tag, (done, total) => {
@@ -540,8 +600,8 @@ export default class HonchoPlugin extends Plugin {
 
 	private async openSearch(): Promise<void> {
 		try {
-			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
-			new HonchoSearchModal(this.app, client, workspaceId, observedPeerId).open();
+			const { client, workspaceId, peerId } = await this.ensureInitialized();
+			new HonchoSearchModal(this.app, client, workspaceId, peerId).open();
 		} catch (err) {
 			new Notice(`${err instanceof Error ? err.message : String(err)}`);
 		}
@@ -553,8 +613,8 @@ export default class HonchoPlugin extends Plugin {
 
 	private async openChat(): Promise<void> {
 		try {
-			const { client, workspaceId, observedPeerId } = await this.ensureInitialized();
-			new HonchoChatModal(this.app, client, workspaceId, observedPeerId).open();
+			const { client, workspaceId, peerId } = await this.ensureInitialized();
+			new HonchoChatModal(this.app, client, workspaceId, peerId).open();
 		} catch (err) {
 			new Notice(`${err instanceof Error ? err.message : String(err)}`);
 		}
@@ -562,16 +622,80 @@ export default class HonchoPlugin extends Plugin {
 
 	private async openContextualChat(file: TFile): Promise<void> {
 		try {
-			const { client, workspaceId, observedPeerId } = await this.ensureInitialized();
+			const { client, workspaceId, peerId } = await this.ensureInitialized();
 			const cache = this.app.metadataCache.getFileCache(file);
+
+			// Inline tags + frontmatter tags
+			const inlineTags = (cache?.tags ?? []).map((t) => t.tag);
+			const fmTags = normalizeFrontmatterTags(cache?.frontmatter?.tags).map(
+				(t) => (t.startsWith("#") ? t : "#" + t)
+			);
+			const tags = [...new Set([...inlineTags, ...fmTags])];
+
+			// Aliases
+			const rawAliases = cache?.frontmatter?.aliases;
+			const aliases: string[] = Array.isArray(rawAliases)
+				? rawAliases.map(String)
+				: typeof rawAliases === "string" ? [rawAliases] : [];
+
+			// Outgoing links
+			const outgoingLinks = (cache?.links ?? []).map((l) => l.link);
+
+			// Backlinks
+			const backlinks: string[] = [];
+			const resolved = this.app.metadataCache.resolvedLinks;
+			if (resolved) {
+				for (const sourcePath in resolved) {
+					if (resolved[sourcePath]?.[file.path]) {
+						backlinks.push(sourcePath.replace(/\.md$/, ""));
+					}
+				}
+			}
+
+			// Custom frontmatter properties
+			const INTERNAL_KEYS = new Set([
+				"tags", "aliases", "cssclass", "cssclasses", "publish", "position",
+				"synced", "session", "hash", "feedback",
+				"honcho_synced", "honcho_session_id", "honcho_message_count",
+				"honcho_content_hash", "honcho_feedback",
+			]);
+			const properties: Record<string, unknown> = {};
+			if (cache?.frontmatter) {
+				for (const [key, value] of Object.entries(cache.frontmatter)) {
+					if (!INTERNAL_KEYS.has(key) && value !== undefined) {
+						properties[key] = value;
+					}
+				}
+			}
+
+			// Content excerpt (first ~500 chars of body)
+			let contentExcerpt: string | undefined;
+			try {
+				const content = await this.app.vault.cachedRead(file);
+				const body = content.replace(/^---[\s\S]*?---\n*/, "").trim();
+				if (body.length > 0) {
+					contentExcerpt = body.slice(0, 500);
+					if (body.length > 500) contentExcerpt += "...";
+				}
+			} catch {
+				// Content read is best-effort
+			}
+
 			const noteContext: NoteContext = {
 				title: file.basename,
-				tags: (cache?.tags ?? []).map((t) => t.tag),
+				tags,
 				headings: (cache?.headings ?? []).map((h) => h.heading),
+				folder: file.parent?.path ?? "/",
+				aliases,
+				outgoingLinks,
+				backlinks,
+				properties: Object.keys(properties).length > 0 ? properties : undefined,
+				contentExcerpt,
 			};
+
 			// Pass session ID if the note has been ingested, grounding chat in its content
 			const fm = readHonchoFrontmatter(this.app, file);
-			new HonchoChatModal(this.app, client, workspaceId, observedPeerId, noteContext, fm.honcho_session_id).open();
+			new HonchoChatModal(this.app, client, workspaceId, peerId, noteContext, fm.session).open();
 		} catch (err) {
 			new Notice(`${err instanceof Error ? err.message : String(err)}`);
 		}
@@ -583,13 +707,33 @@ export default class HonchoPlugin extends Plugin {
 
 	private async openStaleNotes(): Promise<void> {
 		try {
-			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
+			const { client, workspaceId, peerId } = await this.ensureInitialized();
 			const ctx = createIngestContext(
-				this.app, client, workspaceId, peerId, observedPeerId, this.settings.trackFrontmatter
+				this.app, client, workspaceId, peerId, this.settings.trackFrontmatter
 			);
 			new StaleNotesModal(this.app, ctx).open();
 		} catch (err) {
 			new Notice(`${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// Feedback (manual only)
+	// -----------------------------------------------------------------------
+
+	private async runUpdateFeedback(file: TFile): Promise<void> {
+		try {
+			const { client, workspaceId, peerId } = await this.ensureInitialized();
+			const ctx = createFeedbackContext(
+				this.app, client, workspaceId, peerId, this.settings.feedbackLoop
+			);
+			const wrote = await writeFeedback(ctx, file, this.writingFeedbackPaths);
+			new Notice(wrote
+				? `Updated feedback for ${file.basename}`
+				: `No conclusions found for ${file.basename}`
+			);
+		} catch (err) {
+			new Notice(`Feedback failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
 
@@ -599,8 +743,8 @@ export default class HonchoPlugin extends Plugin {
 
 	private async runPushPeerCard(file: TFile): Promise<void> {
 		try {
-			const { client, workspaceId, observedPeerId } = await this.ensureInitialized();
-			const ctx = createSyncContext(this.app, client, workspaceId, observedPeerId);
+			const { client, workspaceId, peerId } = await this.ensureInitialized();
+			const ctx = createSyncContext(this.app, client, workspaceId, peerId);
 			await pushPeerCardFromNote(ctx, file);
 		} catch (err) {
 			new Notice(`Failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -613,13 +757,12 @@ export default class HonchoPlugin extends Plugin {
 
 	private async openSessionManager(): Promise<void> {
 		try {
-			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
+			const { client, workspaceId, peerId } = await this.ensureInitialized();
 			new SessionManagerModal(
 				this.app,
 				client,
 				workspaceId,
 				peerId,
-				observedPeerId,
 				this.settings.trackFrontmatter
 			).open();
 		} catch (err) {
@@ -633,8 +776,8 @@ export default class HonchoPlugin extends Plugin {
 
 	private async runScheduleDream(): Promise<void> {
 		try {
-			const { client, workspaceId, peerId, observedPeerId } = await this.ensureInitialized();
-			await client.scheduleDream(workspaceId, peerId, { observed: observedPeerId });
+			const { client, workspaceId, peerId } = await this.ensureInitialized();
+			await client.scheduleDream(workspaceId, peerId, { observed: peerId });
 			new Notice("Dream scheduled -- Honcho will process ingested material");
 		} catch (err) {
 			new Notice(`Failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -647,8 +790,8 @@ export default class HonchoPlugin extends Plugin {
 
 	private async runGenerateIdentity(): Promise<void> {
 		try {
-			const { client, workspaceId, observedPeerId } = await this.ensureInitialized();
-			const ctx = createSyncContext(this.app, client, workspaceId, observedPeerId);
+			const { client, workspaceId, peerId } = await this.ensureInitialized();
+			const ctx = createSyncContext(this.app, client, workspaceId, peerId);
 			const file = await generateIdentityNote(ctx);
 			this.app.workspace.getLeaf().openFile(file);
 		} catch (err) {
@@ -658,8 +801,8 @@ export default class HonchoPlugin extends Plugin {
 
 	private async runPullConclusions(): Promise<void> {
 		try {
-			const { client, workspaceId, observedPeerId } = await this.ensureInitialized();
-			const ctx = createSyncContext(this.app, client, workspaceId, observedPeerId);
+			const { client, workspaceId, peerId } = await this.ensureInitialized();
+			const ctx = createSyncContext(this.app, client, workspaceId, peerId);
 			const file = await pullConclusions(ctx);
 			this.app.workspace.getLeaf().openFile(file);
 		} catch (err) {
@@ -699,7 +842,6 @@ export default class HonchoPlugin extends Plugin {
 	private async handleFileRename(file: TFile, oldPath: string): Promise<void> {
 		try {
 			const { client, workspaceId } = await this.ensureInitialized();
-			const oldSessionId = `obsidian:file:${oldPath}`;
 
 			// Try to find the old session and update its metadata
 			const sessions = await client.listSessions(workspaceId, {

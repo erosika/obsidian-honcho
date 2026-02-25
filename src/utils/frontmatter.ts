@@ -1,14 +1,24 @@
 import { type App, type TFile } from "obsidian";
 
 export interface HonchoFrontmatter {
-	honcho_synced?: string;
-	honcho_session_id?: string;
-	honcho_message_count?: number;
-	honcho_content_hash?: string;
+	synced?: string;
+	session?: string;
+	hash?: string;
+	feedback?: boolean;
 }
+
+/** Legacy key names used before the rename. Reader accepts both. */
+const LEGACY_KEYS: Record<string, keyof HonchoFrontmatter> = {
+	honcho_synced: "synced",
+	honcho_session_id: "session",
+	honcho_content_hash: "hash",
+	honcho_feedback: "feedback",
+};
 
 /**
  * Read Honcho-specific frontmatter from a note.
+ * Accepts both new keys (synced, session, hash, feedback) and legacy
+ * honcho_* keys for migration. New keys take precedence.
  */
 export function readHonchoFrontmatter(app: App, file: TFile): HonchoFrontmatter {
 	const cache = app.metadataCache.getFileCache(file);
@@ -16,15 +26,18 @@ export function readHonchoFrontmatter(app: App, file: TFile): HonchoFrontmatter 
 	if (!fm) return {};
 
 	return {
-		honcho_synced: fm.honcho_synced as string | undefined,
-		honcho_session_id: fm.honcho_session_id as string | undefined,
-		honcho_message_count: fm.honcho_message_count as number | undefined,
-		honcho_content_hash: fm.honcho_content_hash as string | undefined,
+		synced: (fm.synced ?? fm.honcho_synced) as string | undefined,
+		session: (fm.session ?? fm.honcho_session_id) as string | undefined,
+		hash: (fm.hash ?? fm.honcho_content_hash) as string | undefined,
+		feedback: typeof fm.feedback === "boolean" ? fm.feedback
+			: typeof fm.honcho_feedback === "boolean" ? fm.honcho_feedback
+			: undefined,
 	};
 }
 
 /**
  * Write Honcho tracking data into note frontmatter.
+ * Writes new keys and removes legacy honcho_* keys if present.
  */
 export async function writeHonchoFrontmatter(
 	app: App,
@@ -32,18 +45,16 @@ export async function writeHonchoFrontmatter(
 	data: HonchoFrontmatter
 ): Promise<void> {
 	await app.fileManager.processFrontMatter(file, (fm) => {
-		if (data.honcho_synced !== undefined) {
-			fm.honcho_synced = data.honcho_synced;
-		}
-		if (data.honcho_session_id !== undefined) {
-			fm.honcho_session_id = data.honcho_session_id;
-		}
-		if (data.honcho_message_count !== undefined) {
-			fm.honcho_message_count = data.honcho_message_count;
-		}
-		if (data.honcho_content_hash !== undefined) {
-			fm.honcho_content_hash = data.honcho_content_hash;
-		}
+		if (data.synced !== undefined) fm.synced = data.synced;
+		if (data.session !== undefined) fm.session = data.session;
+		if (data.hash !== undefined) fm.hash = data.hash;
+
+		// Clean up legacy keys
+		delete fm.honcho_synced;
+		delete fm.honcho_session_id;
+		delete fm.honcho_message_count;
+		delete fm.honcho_content_hash;
+		delete fm.honcho_feedback;
 	});
 }
 

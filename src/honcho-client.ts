@@ -114,19 +114,6 @@ export interface SessionConfiguration {
 	dream?: { enabled?: boolean } | null;
 }
 
-export interface SessionSummaryResponse {
-	short_summary: string | null;
-	long_summary: string | null;
-	last_message_id: string | null;
-}
-
-export interface SessionContextResponse {
-	messages: MessageResponse[];
-	summary: string | null;
-	representation: string | null;
-	peer_card: string[] | null;
-}
-
 // ---------------------------------------------------------------------------
 // Retry
 // ---------------------------------------------------------------------------
@@ -198,6 +185,7 @@ export class HonchoClient {
 				const resp: RequestUrlResponse = await requestUrl(req);
 
 				if (resp.status >= 400) {
+					console.error(`[honcho] ${method} ${fullUrl} -> ${resp.status}`, resp.text);
 					const err = new Error(
 						`Honcho API error ${resp.status}: ${resp.text}`
 					);
@@ -218,6 +206,7 @@ export class HonchoClient {
 					lastError = err;
 				} else {
 					// Network-level error (no response) -- always retry
+					console.error(`[honcho] ${method} ${fullUrl} -> network error`, err);
 					lastError = err instanceof Error ? err : new Error(String(err));
 				}
 			}
@@ -252,10 +241,15 @@ export class HonchoClient {
 
 	async testConnection(): Promise<boolean> {
 		try {
+			// POST /workspaces is idempotent (get-or-create), so safe for a health check
 			const resp = await requestUrl({
-				url: `${this.baseUrl}/health`,
-				method: "GET",
-				headers: { Authorization: `Bearer ${this.apiKey}` },
+				url: this.url("/workspaces"),
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${this.apiKey}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ id: "test-connection" }),
 			});
 			return resp.status >= 200 && resp.status < 300;
 		} catch {
@@ -347,7 +341,6 @@ export class HonchoClient {
 	/**
 	 * Streaming chat via SSE. Uses native fetch (available in Electron)
 	 * since Obsidian's requestUrl doesn't support streaming.
-	 * Yields StreamChatEvent objects as they arrive.
 	 */
 	async *peerChatStream(
 		workspaceId: string,
@@ -414,18 +407,6 @@ export class HonchoClient {
 		}
 	}
 
-	async searchPeer(
-		workspaceId: string,
-		peerId: string,
-		query: string,
-		opts?: { top_k?: number; filters?: Record<string, unknown> }
-	): Promise<MessageResponse[]> {
-		return this.post<MessageResponse[]>(
-			`/workspaces/${workspaceId}/peers/${peerId}/search`,
-			{ query, ...opts }
-		);
-	}
-
 	// -----------------------------------------------------------------------
 	// Session
 	// -----------------------------------------------------------------------
@@ -472,65 +453,6 @@ export class HonchoClient {
 		await this.del(`/workspaces/${workspaceId}/sessions/${sessionId}`);
 	}
 
-	async cloneSession(workspaceId: string, sessionId: string): Promise<SessionResponse> {
-		return this.post<SessionResponse>(
-			`/workspaces/${workspaceId}/sessions/${sessionId}/clone`
-		);
-	}
-
-	async searchSession(
-		workspaceId: string,
-		sessionId: string,
-		query: string,
-		opts?: { top_k?: number }
-	): Promise<MessageResponse[]> {
-		return this.post<MessageResponse[]>(
-			`/workspaces/${workspaceId}/sessions/${sessionId}/search`,
-			{ query, ...opts }
-		);
-	}
-
-	// Session peer management
-	async addSessionPeers(
-		workspaceId: string,
-		sessionId: string,
-		peers: Record<string, SessionPeerConfig>
-	): Promise<void> {
-		await this.post(
-			`/workspaces/${workspaceId}/sessions/${sessionId}/peers`,
-			{ peers }
-		);
-	}
-
-	async listSessionPeers(
-		workspaceId: string,
-		sessionId: string
-	): Promise<Record<string, SessionPeerConfig>> {
-		return this.get<Record<string, SessionPeerConfig>>(
-			`/workspaces/${workspaceId}/sessions/${sessionId}/peers`
-		);
-	}
-
-	async getSessionSummaries(
-		workspaceId: string,
-		sessionId: string
-	): Promise<SessionSummaryResponse> {
-		return this.get<SessionSummaryResponse>(
-			`/workspaces/${workspaceId}/sessions/${sessionId}/summaries`
-		);
-	}
-
-	async getSessionContext(
-		workspaceId: string,
-		sessionId: string,
-		opts?: { token_budget?: number }
-	): Promise<SessionContextResponse> {
-		return this.get<SessionContextResponse>(
-			`/workspaces/${workspaceId}/sessions/${sessionId}/context`,
-			opts
-		);
-	}
-
 	// -----------------------------------------------------------------------
 	// Messages
 	// -----------------------------------------------------------------------
@@ -542,7 +464,6 @@ export class HonchoClient {
 			peer_id: string;
 			content: string;
 			metadata?: Record<string, unknown>;
-			created_at?: string;
 		}>
 	): Promise<MessageResponse[]> {
 		return this.post<MessageResponse[]>(
@@ -551,38 +472,9 @@ export class HonchoClient {
 		);
 	}
 
-	async listMessages(
-		workspaceId: string,
-		sessionId: string,
-		filters?: Record<string, unknown>,
-		page = 1,
-		size = 50
-	): Promise<PageResponse<MessageResponse>> {
-		return this.post<PageResponse<MessageResponse>>(
-			`/workspaces/${workspaceId}/sessions/${sessionId}/messages/list`,
-			{ filters },
-			{ page, size }
-		);
-	}
-
 	// -----------------------------------------------------------------------
 	// Conclusions
 	// -----------------------------------------------------------------------
-
-	async createConclusions(
-		workspaceId: string,
-		conclusions: Array<{
-			content: string;
-			observer_id: string;
-			observed_id: string;
-			session_id: string | null;
-		}>
-	): Promise<ConclusionResponse[]> {
-		return this.post<ConclusionResponse[]>(
-			`/workspaces/${workspaceId}/conclusions`,
-			{ conclusions }
-		);
-	}
 
 	async listConclusions(
 		workspaceId: string,
@@ -612,10 +504,6 @@ export class HonchoClient {
 		);
 	}
 
-	async deleteConclusion(workspaceId: string, conclusionId: string): Promise<void> {
-		await this.del(`/workspaces/${workspaceId}/conclusions/${conclusionId}`);
-	}
-
 	// -----------------------------------------------------------------------
 	// Search
 	// -----------------------------------------------------------------------
@@ -627,17 +515,6 @@ export class HonchoClient {
 	): Promise<MessageResponse[]> {
 		return this.post<MessageResponse[]>(
 			`/workspaces/${workspaceId}/search`,
-			{ query, ...opts }
-		);
-	}
-
-	async searchConclusions(
-		workspaceId: string,
-		query: string,
-		opts?: { top_k?: number; filters?: Record<string, unknown> }
-	): Promise<ConclusionResponse[]> {
-		return this.post<ConclusionResponse[]>(
-			`/workspaces/${workspaceId}/conclusions/query`,
 			{ query, ...opts }
 		);
 	}

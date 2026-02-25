@@ -18,11 +18,39 @@ export function computeContentHash(content: string): string {
 }
 
 /**
+ * Generate an 8-char hex turn ID for linking message pairs.
+ * Each ingestion turn (document context + body) shares a turn_id
+ * so the pair is queryable as a unit.
+ */
+export function generateTurnId(sessionId: string): string {
+	const seed = `${sessionId}:${Date.now()}`;
+	return computeContentHash(seed);
+}
+
+/**
  * Strip YAML frontmatter from markdown content.
  * Returns only the body so hash is stable across frontmatter-only edits.
  */
 export function stripFrontmatter(content: string): string {
 	return content.replace(/^---[\s\S]*?---\n*/, "");
+}
+
+const HONCHO_SECTION_RE = /\n## Honcho\n[\s\S]*$/;
+
+/**
+ * Strip the `## Honcho` feedback section from note content.
+ */
+export function stripHonchoSection(content: string): string {
+	return content.replace(HONCHO_SECTION_RE, "");
+}
+
+/**
+ * Strip both frontmatter and the Honcho feedback section.
+ * Use this everywhere content is prepared for ingestion or hashing
+ * so Honcho never sees its own output and hashes are stable.
+ */
+export function stripForIngestion(content: string): string {
+	return stripHonchoSection(stripFrontmatter(content));
 }
 
 // ---------------------------------------------------------------------------
@@ -48,25 +76,25 @@ export interface StalenessInfo {
 
 /**
  * Compare a file's current state against its stored sync metadata.
- * Hash is computed on body AFTER stripping frontmatter, preventing the
- * feedback loop where writing frontmatter triggers re-ingestion.
+ * Hash is computed on body AFTER stripping frontmatter and the Honcho
+ * feedback section, preventing re-ingestion from either write path.
  */
 export async function checkSyncStatus(app: App, file: TFile): Promise<SyncStatus> {
 	const fm = readHonchoFrontmatter(app, file);
 	const rawContent = await app.vault.cachedRead(file);
-	const body = stripFrontmatter(rawContent);
+	const body = stripForIngestion(rawContent);
 	const contentHash = computeContentHash(body);
 
-	if (!fm.honcho_synced) {
+	if (!fm.synced) {
 		return { needsSync: true, reason: "new", contentHash, mtime: file.stat.mtime };
 	}
 
-	if (fm.honcho_content_hash && fm.honcho_content_hash !== contentHash) {
+	if (fm.hash && fm.hash !== contentHash) {
 		return { needsSync: true, reason: "modified", contentHash, mtime: file.stat.mtime };
 	}
 
-	if (!fm.honcho_content_hash) {
-		const syncedTime = new Date(fm.honcho_synced).getTime();
+	if (!fm.hash) {
+		const syncedTime = new Date(fm.synced).getTime();
 		if (file.stat.mtime > syncedTime) {
 			return { needsSync: true, reason: "modified", contentHash, mtime: file.stat.mtime };
 		}
@@ -111,28 +139,28 @@ export async function findStaleNotes(app: App): Promise<StalenessInfo[]> {
 
 	for (const file of app.vault.getMarkdownFiles()) {
 		const fm = readHonchoFrontmatter(app, file);
-		if (!fm.honcho_synced) continue;
+		if (!fm.synced) continue;
 
 		const rawContent = await app.vault.cachedRead(file);
-		const body = stripFrontmatter(rawContent);
+		const body = stripForIngestion(rawContent);
 		const contentHash = computeContentHash(body);
 
 		let isStale = false;
 
-		if (fm.honcho_content_hash) {
-			isStale = fm.honcho_content_hash !== contentHash;
+		if (fm.hash) {
+			isStale = fm.hash !== contentHash;
 		} else {
-			const syncedTime = new Date(fm.honcho_synced).getTime();
+			const syncedTime = new Date(fm.synced).getTime();
 			isStale = file.stat.mtime > syncedTime;
 		}
 
 		if (isStale) {
 			stale.push({
 				file,
-				lastSynced: fm.honcho_synced,
+				lastSynced: fm.synced,
 				lastModified: file.stat.mtime,
 				contentHash,
-				storedHash: fm.honcho_content_hash ?? "",
+				storedHash: fm.hash ?? "",
 			});
 		}
 	}
