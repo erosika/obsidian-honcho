@@ -74,18 +74,48 @@ export class HonchoSettingTab extends PluginSettingTab {
 					});
 			});
 
+		const PRESET_URLS: Record<string, string> = {
+			production: "https://api.honcho.dev",
+			local: "http://localhost:8000",
+		};
+		const getPresetKey = (url: string) =>
+			url === PRESET_URLS.production ? "production"
+			: url === PRESET_URLS.local ? "local"
+			: "custom";
+
+		let customUrlInput: HTMLInputElement | null = null;
+
 		new Setting(containerEl)
 			.setName("Base URL")
 			.setDesc("Honcho API base URL")
-			.addText((text) =>
+			.addDropdown((dd) => {
+				dd.addOption("production", "Production — api.honcho.dev");
+				dd.addOption("local", "Local — localhost:8000");
+				dd.addOption("custom", "Custom");
+				dd.setValue(getPresetKey(this.plugin.settings.baseUrl));
+				dd.onChange((value) => {
+					if (value === "custom") {
+						if (customUrlInput) customUrlInput.style.display = "";
+					} else {
+						if (customUrlInput) customUrlInput.style.display = "none";
+						this.plugin.settings.baseUrl = PRESET_URLS[value];
+						this.debouncedSave();
+					}
+				});
+			})
+			.addText((text) => {
+				customUrlInput = text.inputEl;
+				const isCustom = getPresetKey(this.plugin.settings.baseUrl) === "custom";
+				text.inputEl.style.display = isCustom ? "" : "none";
+				text.inputEl.style.width = "200px";
 				text
-					.setPlaceholder("https://api.honcho.dev")
-					.setValue(this.plugin.settings.baseUrl)
+					.setPlaceholder("https://your-instance.example.com")
+					.setValue(isCustom ? this.plugin.settings.baseUrl : "")
 					.onChange((value) => {
 						this.plugin.settings.baseUrl = value;
 						this.debouncedSave();
-					})
-			);
+					});
+			});
 
 		new Setting(containerEl)
 			.setName("API version")

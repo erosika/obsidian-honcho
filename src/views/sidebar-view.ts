@@ -16,11 +16,20 @@ interface CardGroup {
 	collapsed: boolean;
 }
 
+interface ChatMessage {
+	role: "user" | "assistant";
+	content: string;
+}
+
 const CARD_PREFIXES: Array<{ prefix: string; key: string; label: string; cls: string }> = [
 	{ prefix: "PATTERN:", key: "pattern", label: "Patterns", cls: "honcho-group-pattern" },
 	{ prefix: "TRAIT:", key: "trait", label: "Traits", cls: "honcho-group-trait" },
 	{ prefix: "PREFERENCE:", key: "preference", label: "Preferences", cls: "honcho-group-preference" },
 ];
+
+// Items starting with these prefixes are system directives for the AI -- not
+// useful to reflect back to the user as profile information.
+const HIDDEN_PREFIXES = ["INSTRUCTION:"];
 
 function groupCardItems(items: string[]): CardGroup[] {
 	const groups: Map<string, CardGroup> = new Map();
@@ -39,6 +48,9 @@ function groupCardItems(items: string[]): CardGroup[] {
 	}
 
 	for (const item of items) {
+		// Skip system directives
+		if (HIDDEN_PREFIXES.some((p) => item.startsWith(p))) continue;
+
 		let matched = false;
 		for (const { prefix, key } of CARD_PREFIXES) {
 			if (item.startsWith(prefix)) {
@@ -72,6 +84,13 @@ export class HonchoSidebarView extends ItemView {
 	private connectionCache: { ok: boolean; ts: number } | null = null;
 	private static readonly CONN_CACHE_TTL = 60_000;
 
+	// Chat state (persists across re-renders)
+	private chatMessages: ChatMessage[] = [];
+	private chatSending = false;
+	private chatAbortController: AbortController | null = null;
+	private chatEl: HTMLElement | null = null;
+	private chatInputEl: HTMLTextAreaElement | null = null;
+
 	constructor(leaf: WorkspaceLeaf, plugin: HonchoPlugin) {
 		super(leaf);
 		this.plugin = plugin;
@@ -99,13 +118,18 @@ export class HonchoSidebarView extends ItemView {
 	}
 
 	async onClose(): Promise<void> {
-		// No active listeners to clean up
+		this.chatAbortController?.abort();
+		this.chatAbortController = null;
 	}
 
 	async render(): Promise<void> {
 		if (!this.containerDiv) return;
 		const el = this.containerDiv;
 		el.empty();
+
+		// Invalidate chat element refs -- renderChat will create fresh ones
+		this.chatEl = null;
+		this.chatInputEl = null;
 
 		// Header
 		const header = el.createDiv({ cls: "honcho-sidebar-header" });
@@ -182,8 +206,11 @@ export class HonchoSidebarView extends ItemView {
 
 			body.empty();
 
-			// Sync status -- first, always visible
+			// Sync status
 			await this.renderSyncStatus(body);
+
+			// Chat -- above identity so it's immediately reachable
+			this.renderChat(body);
 
 			// Peer card -- grouped by type
 			if (contextResp.peer_card && contextResp.peer_card.length > 0) {
@@ -193,12 +220,20 @@ export class HonchoSidebarView extends ItemView {
 				}
 			}
 
-			// Representation section
+			// Representation section -- collapsed by default; it's a log, not a profile
 			if (contextResp.representation) {
-				const repSection = body.createDiv({ cls: "honcho-section" });
-				const repHeader = repSection.createDiv({ cls: "honcho-section-header" });
-				repHeader.createEl("h4", { text: "Representation" });
-				const repContent = repSection.createDiv({ cls: "honcho-representation" });
+				const repSection = body.createDiv({ cls: "honcho-section honcho-rep-section" });
+				const repDetails = repSection.createEl("details");
+				const repSummary = repDetails.createEl("summary", { cls: "honcho-group-summary" });
+				repSummary.createEl("h4", { text: "Observations" });
+
+				// Count bracketed timestamp entries as a proxy for observation count
+				const entryCount = (contextResp.representation.match(/^\[/gm) ?? []).length;
+				if (entryCount > 0) {
+					repSummary.createSpan({ text: String(entryCount), cls: "honcho-group-count" });
+				}
+
+				const repContent = repDetails.createDiv({ cls: "honcho-representation" });
 				await MarkdownRenderer.render(
 					this.app,
 					contextResp.representation,
@@ -206,6 +241,7 @@ export class HonchoSidebarView extends ItemView {
 					"",
 					this
 				);
+				this.postProcessRepresentation(repContent);
 			}
 
 			if (
@@ -217,6 +253,7 @@ export class HonchoSidebarView extends ItemView {
 					cls: "honcho-sidebar-empty",
 				});
 			}
+
 		} catch (err) {
 			body.empty();
 			body.createEl("p", {
@@ -230,31 +267,216 @@ export class HonchoSidebarView extends ItemView {
 	// Card group rendering
 	// ---------------------------------------------------------------------------
 
+	private static readonly MAX_LIST_ITEMS = 5;
+
 	private renderCardGroup(parent: HTMLElement, group: CardGroup): void {
 		const section = parent.createDiv({ cls: `honcho-section honcho-card-group ${group.cls}` });
 
-		if (group.collapsed) {
-			// Collapsible group (patterns, traits, preferences)
-			const details = section.createEl("details");
-			const summary = details.createEl("summary", { cls: "honcho-group-summary" });
-			summary.createEl("h4", { text: group.label });
-			summary.createSpan({
-				text: String(group.items.length),
-				cls: "honcho-group-count",
+		// All groups use <details>; general/identity starts open, others start closed
+		const details = group.collapsed
+			? section.createEl("details")
+			: section.createEl("details", { attr: { open: "" } });
+
+		const summary = details.createEl("summary", { cls: "honcho-group-summary" });
+		summary.createEl("h4", { text: group.label });
+		summary.createSpan({
+			text: String(group.items.length),
+			cls: "honcho-group-count",
+		});
+
+		const visible = group.items.slice(0, HonchoSidebarView.MAX_LIST_ITEMS);
+		const hidden = group.items.slice(HonchoSidebarView.MAX_LIST_ITEMS);
+
+		const list = details.createEl("ul", { cls: "honcho-card-list" });
+		for (const item of visible) {
+			list.createEl("li", { text: item });
+		}
+
+		if (hidden.length > 0) {
+			const expandBtn = details.createEl("button", {
+				text: `+${hidden.length} more`,
+				cls: "honcho-expand-btn",
 			});
-			const list = details.createEl("ul", { cls: "honcho-card-list" });
-			for (const item of group.items) {
-				list.createEl("li", { text: item });
+			expandBtn.addEventListener("click", () => {
+				for (const item of hidden) {
+					list.createEl("li", { text: item });
+				}
+				expandBtn.remove();
+			});
+		}
+	}
+
+	// ---------------------------------------------------------------------------
+	// Representation post-processing
+	// ---------------------------------------------------------------------------
+
+	private postProcessRepresentation(el: HTMLElement): void {
+		const tsRegex = /^\[(\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)\]\s*/;
+
+		for (const p of Array.from(el.querySelectorAll("p"))) {
+			const text = p.textContent?.trim() ?? "";
+
+			// Hide "Premises:" labels and the list that follows -- these are
+			// internal reasoning scaffolding, not useful to the user.
+			if (text === "Premises:") {
+				const next = p.nextElementSibling;
+				if (next?.tagName === "UL") next.addClass("honcho-rep-hidden");
+				p.addClass("honcho-rep-hidden");
+				continue;
 			}
-		} else {
-			// Open group (general/identity)
-			const header = section.createDiv({ cls: "honcho-section-header" });
-			header.createEl("h4", { text: group.label });
-			const list = section.createEl("ul", { cls: "honcho-card-list" });
-			for (const item of group.items) {
-				list.createEl("li", { text: item });
+
+			// Transform timestamped entries into structured rows
+			const match = tsRegex.exec(text);
+			if (!match) continue;
+			const timestamp = match[1];
+			const bodyText = text.slice(match[0].length).trim();
+			p.addClass("honcho-rep-entry");
+			p.empty();
+			p.createSpan({ cls: "honcho-rep-ts", text: timestamp });
+			p.createSpan({ cls: "honcho-rep-body", text: bodyText });
+		}
+	}
+
+	// ---------------------------------------------------------------------------
+	// Sidebar chat
+	// ---------------------------------------------------------------------------
+
+	private renderChat(parent: HTMLElement): void {
+		const section = parent.createDiv({ cls: "honcho-section honcho-sidebar-chat-section" });
+		const header = section.createDiv({ cls: "honcho-section-header" });
+		header.createEl("h4", { text: "Chat" });
+
+		if (this.chatMessages.length > 0) {
+			const clearBtn = header.createEl("button", {
+				text: "Clear",
+				cls: "honcho-btn-small",
+			});
+			clearBtn.addEventListener("click", () => {
+				this.chatMessages = [];
+				this.renderChatMessages();
+			});
+		}
+
+		const messagesEl = section.createDiv({ cls: "honcho-sidebar-chat-messages" });
+		this.chatEl = messagesEl;
+		this.renderChatMessages();
+
+		const inputArea = section.createDiv({ cls: "honcho-sidebar-chat-input-area" });
+		const inputEl = inputArea.createEl("textarea", {
+			cls: "honcho-sidebar-chat-input",
+			attr: { placeholder: "Ask Honcho\u2026", rows: "2" },
+		});
+		this.chatInputEl = inputEl as HTMLTextAreaElement;
+
+		inputEl.addEventListener("keydown", (e) => {
+			if (e.key === "Enter" && !e.shiftKey) {
+				e.preventDefault();
+				this.sendChatMessage();
+			}
+		});
+
+		const sendBtn = inputArea.createEl("button", {
+			text: "Send",
+			cls: "honcho-btn-small honcho-chat-send-btn mod-cta",
+		});
+		sendBtn.addEventListener("click", () => this.sendChatMessage());
+	}
+
+	private renderChatMessages(): void {
+		const el = this.chatEl;
+		if (!el) return;
+		el.empty();
+
+		if (this.chatMessages.length === 0) {
+			el.createEl("p", {
+				text: "Ask about your notes or identity.",
+				cls: "honcho-sidebar-empty honcho-sidebar-chat-hint",
+			});
+			return;
+		}
+
+		for (const msg of this.chatMessages) {
+			const bubble = el.createDiv({
+				cls: `honcho-chat-bubble honcho-chat-${msg.role}`,
+			});
+			if (msg.role === "assistant") {
+				const contentDiv = bubble.createDiv();
+				MarkdownRenderer.render(this.app, msg.content, contentDiv, "", this);
+			} else {
+				bubble.setText(msg.content);
 			}
 		}
+
+		el.scrollTop = el.scrollHeight;
+	}
+
+	private async sendChatMessage(): Promise<void> {
+		if (!this.chatInputEl || !this.chatEl || this.chatSending) return;
+		const client = this.plugin.getClient();
+		if (!client) return;
+
+		const query = this.chatInputEl.value.trim();
+		if (!query) return;
+
+		this.chatSending = true;
+		this.chatInputEl.value = "";
+		this.chatMessages.push({ role: "user", content: query });
+		this.renderChatMessages();
+
+		// Streaming bubble
+		const bubble = this.chatEl.createDiv({
+			cls: "honcho-chat-bubble honcho-chat-assistant honcho-chat-streaming",
+		});
+		const contentEl = bubble.createDiv({ cls: "honcho-chat-stream-content" });
+		contentEl.setText("\u2026");
+		this.chatEl.scrollTop = this.chatEl.scrollHeight;
+
+		let accumulated = "";
+		this.chatAbortController = new AbortController();
+
+		try {
+			const stream = client.peerChatStream(
+				this.plugin.getWorkspaceId(),
+				this.plugin.getPeerId(),
+				query,
+				{ reasoning_level: "medium" },
+				this.chatAbortController.signal
+			);
+
+			for await (const event of stream) {
+				if (event.done) break;
+				if (event.delta?.content) {
+					accumulated += event.delta.content;
+					contentEl.empty();
+					await MarkdownRenderer.render(this.app, accumulated, contentEl, "", this);
+					this.chatEl!.scrollTop = this.chatEl!.scrollHeight;
+				}
+			}
+		} catch (err) {
+			if (!(err instanceof DOMException && err.name === "AbortError")) {
+				if (!accumulated) {
+					try {
+						const resp = await client.peerChat(
+							this.plugin.getWorkspaceId(),
+							this.plugin.getPeerId(),
+							query,
+							{ reasoning_level: "medium" }
+						);
+						accumulated = resp.content ?? "No response.";
+					} catch {
+						accumulated = "Could not reach Honcho.";
+					}
+				}
+			}
+		} finally {
+			this.chatAbortController = null;
+		}
+
+		bubble.removeClass("honcho-chat-streaming");
+		const content = accumulated || "No response.";
+		this.chatMessages.push({ role: "assistant", content });
+		this.renderChatMessages();
+		this.chatSending = false;
 	}
 
 	// ---------------------------------------------------------------------------

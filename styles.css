@@ -1,6 +1,13 @@
 /* =========================================================================
    Honcho Plugin Styles
    Uses Obsidian CSS variables exclusively -- no inline colors.
+
+   Design principles:
+   - 0px border-radius on all structural elements (cards, panels, inputs, buttons)
+   - 9999px only for true pill labels
+   - Monospace font for labels, badges, status, counts, input
+   - No italic for empty/loading states -- muted color only
+   - Chat: editorial block layout, labeled turns, no rounded bubbles
    ========================================================================= */
 
 /* -- Sidebar ------------------------------------------------------------ */
@@ -22,6 +29,8 @@
 .honcho-sidebar-header h3 {
 	margin: 0;
 	font-size: var(--font-ui-medium);
+	font-family: var(--font-monospace);
+	letter-spacing: 0.04em;
 }
 
 .honcho-header-right {
@@ -35,6 +44,7 @@
 	align-items: center;
 	gap: var(--size-2-3);
 	font-size: var(--font-ui-smaller);
+	font-family: var(--font-monospace);
 }
 
 .honcho-dot-ok {
@@ -54,6 +64,7 @@
 .honcho-refresh-btn {
 	color: var(--text-faint);
 	padding: var(--size-2-2);
+	border-radius: 0;
 }
 
 .honcho-refresh-btn:hover {
@@ -78,8 +89,9 @@
 	margin: 0;
 	color: var(--text-faint);
 	font-size: var(--font-ui-smaller);
+	font-family: var(--font-monospace);
 	text-transform: uppercase;
-	letter-spacing: 0.08em;
+	letter-spacing: 0.1em;
 	font-weight: var(--font-semibold);
 }
 
@@ -145,17 +157,19 @@ details[open] > .honcho-group-summary::before {
 	margin: 0;
 	color: var(--text-faint);
 	font-size: var(--font-ui-smaller);
+	font-family: var(--font-monospace);
 	text-transform: uppercase;
-	letter-spacing: 0.08em;
+	letter-spacing: 0.1em;
 	font-weight: var(--font-semibold);
 }
 
 .honcho-group-count {
 	font-size: var(--font-ui-smaller);
+	font-family: var(--font-monospace);
 	color: var(--text-faint);
 	background: var(--background-secondary);
-	padding: 0 6px;
-	border-radius: var(--radius-s);
+	padding: 1px 5px;
+	border: 1px solid var(--background-modifier-border);
 	line-height: 1.6;
 }
 
@@ -190,30 +204,144 @@ details[open] > .honcho-group-summary::before {
 /* -- Representation ----------------------------------------------------- */
 
 .honcho-representation {
-	padding: var(--size-4-3);
-	background: var(--background-secondary);
-	border-radius: var(--radius-s);
 	border: 1px solid var(--background-modifier-border);
 	font-size: var(--font-ui-small);
-	line-height: 1.6;
-}
-
-.honcho-representation p:first-child {
-	margin-top: 0;
-}
-
-.honcho-representation p:last-child {
-	margin-bottom: 0;
+	line-height: 1.5;
+	max-height: 340px;
+	overflow-y: auto;
 }
 
 .honcho-representation h1,
 .honcho-representation h2,
 .honcho-representation h3 {
-	font-size: var(--font-ui-small);
+	margin: 0;
+	padding: var(--size-4-1) var(--size-4-3);
+	font-size: var(--font-ui-smaller);
+	font-family: var(--font-monospace);
 	font-weight: var(--font-semibold);
+	text-transform: uppercase;
+	letter-spacing: 0.1em;
+	color: var(--text-faint);
+	background: var(--background-secondary);
+	border-bottom: 1px solid var(--background-modifier-border);
+	position: sticky;
+	top: 0;
+	z-index: 1;
+}
+
+.honcho-representation h2 + h2,
+.honcho-representation h2 + h3,
+.honcho-representation h3 + h2,
+.honcho-representation h3 + h3 {
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+/* Post-processed timestamp entry */
+.honcho-rep-entry {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	padding: var(--size-4-2) var(--size-4-3);
+	border-bottom: 1px solid var(--background-modifier-border);
+	margin: 0 !important;
+}
+
+.honcho-rep-entry:last-of-type {
+	border-bottom: none;
+}
+
+.honcho-rep-ts {
+	font-family: var(--font-monospace);
+	font-size: 10px;
+	color: var(--text-faint);
+	line-height: 1;
+}
+
+.honcho-rep-body {
 	color: var(--text-normal);
-	margin-top: var(--size-4-2);
-	margin-bottom: var(--size-4-1);
+	line-height: 1.45;
+}
+
+/* Unprocessed paragraphs (no timestamp match) */
+.honcho-representation p:not(.honcho-rep-entry):not(.honcho-rep-hidden) {
+	padding: var(--size-4-2) var(--size-4-3);
+	margin: 0;
+	color: var(--text-muted);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.honcho-representation p:not(.honcho-rep-entry):not(.honcho-rep-hidden):last-child {
+	border-bottom: none;
+}
+
+/* Hidden API artifacts (Premises:, premise bullet lists) */
+.honcho-rep-hidden {
+	display: none;
+}
+
+/* -- Expand button (show N more items) ---------------------------------- */
+
+.honcho-expand-btn {
+	display: block;
+	margin-top: var(--size-4-1);
+	font-size: var(--font-ui-smaller);
+	font-family: var(--font-monospace);
+	color: var(--text-faint);
+	background: none;
+	border: none;
+	padding: 0;
+	cursor: pointer;
+	letter-spacing: 0.04em;
+}
+
+.honcho-expand-btn:hover {
+	color: var(--interactive-accent);
+}
+
+/* -- Sidebar chat ------------------------------------------------------- */
+
+.honcho-sidebar-chat-section {
+	border-top: 1px solid var(--background-modifier-border);
+	padding-top: var(--size-4-4);
+}
+
+.honcho-sidebar-chat-messages {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+	margin-bottom: var(--size-4-2);
+}
+
+.honcho-sidebar-chat-hint {
+	margin: 0;
+}
+
+.honcho-sidebar-chat-input-area {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-1);
+}
+
+.honcho-sidebar-chat-input {
+	width: 100%;
+	padding: var(--size-4-2);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 0;
+	background: var(--background-primary);
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+	font-family: var(--font-monospace);
+	resize: vertical;
+	box-sizing: border-box;
+}
+
+.honcho-sidebar-chat-input:focus {
+	border-color: var(--interactive-accent);
+	outline: none;
+}
+
+.honcho-chat-send-btn {
+	align-self: flex-end;
 }
 
 /* -- Sync status -------------------------------------------------------- */
@@ -234,9 +362,8 @@ details[open] > .honcho-group-summary::before {
 
 .honcho-sidebar-empty,
 .honcho-loading {
-	color: var(--text-muted);
+	color: var(--text-faint);
 	font-size: var(--font-ui-small);
-	font-style: italic;
 }
 
 .honcho-error {
@@ -257,19 +384,20 @@ details[open] > .honcho-group-summary::before {
 }
 
 .honcho-search-count {
-	color: var(--text-muted);
-	font-size: var(--font-ui-small);
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	font-family: var(--font-monospace);
 	margin-bottom: var(--size-4-2);
 }
 
 .honcho-search-loading {
-	color: var(--text-muted);
-	font-style: italic;
+	color: var(--text-faint);
+	font-size: var(--font-ui-small);
 }
 
 .honcho-search-empty {
-	color: var(--text-muted);
-	font-style: italic;
+	color: var(--text-faint);
+	font-size: var(--font-ui-small);
 }
 
 .honcho-search-error {
@@ -280,13 +408,13 @@ details[open] > .honcho-group-summary::before {
 	padding: var(--size-4-2);
 	margin-bottom: var(--size-4-2);
 	background: var(--background-secondary);
-	border-radius: var(--radius-s);
 	border-left: 3px solid var(--interactive-accent);
 }
 
 .honcho-result-date {
 	color: var(--text-faint);
 	font-size: var(--font-ui-smaller);
+	font-family: var(--font-monospace);
 	margin-bottom: var(--size-4-1);
 }
 
@@ -316,40 +444,70 @@ details[open] > .honcho-group-summary::before {
 	padding: 0;
 }
 
+/* Messages area: surface container, flat edges */
 .honcho-chat-messages {
 	min-height: 200px;
 	max-height: 400px;
 	overflow-y: auto;
-	padding: var(--size-4-2);
+	padding: var(--size-4-3);
 	margin-bottom: var(--size-4-2);
 	background: var(--background-secondary);
-	border-radius: var(--radius-s);
+	border: 1px solid var(--background-modifier-border);
 	display: flex;
 	flex-direction: column;
-	gap: var(--size-4-2);
+	gap: var(--size-4-3);
 }
 
+/* Turn-based layout: each message is a labeled block, no bubbles */
 .honcho-chat-bubble {
-	padding: var(--size-4-2) var(--size-4-3);
-	border-radius: var(--radius-m);
-	max-width: 85%;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	max-width: 100%;
 	font-size: var(--font-ui-small);
 	line-height: 1.5;
 	word-break: break-word;
 }
 
+/* Role label above each message */
+.honcho-chat-bubble::before {
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	color: var(--text-faint);
+}
+
+.honcho-chat-user::before {
+	content: "you";
+	color: var(--interactive-accent);
+	text-align: right;
+	opacity: 0.8;
+}
+
+.honcho-chat-assistant::before {
+	content: "honcho";
+}
+
+/* User turn: right-aligned text, subtle accent right-border */
 .honcho-chat-user {
 	align-self: flex-end;
-	background: var(--interactive-accent);
-	color: var(--text-on-accent);
+	align-items: flex-end;
+	color: var(--text-normal);
+	border-right: 2px solid var(--interactive-accent);
+	padding-right: var(--size-4-2);
+	max-width: 88%;
 	white-space: pre-wrap;
 }
 
+/* Assistant turn: left-aligned, muted label, normal text */
 .honcho-chat-assistant {
 	align-self: flex-start;
-	background: var(--background-primary);
+	align-items: flex-start;
 	color: var(--text-normal);
-	border: 1px solid var(--background-modifier-border);
+	border-left: 2px solid var(--background-modifier-border);
+	padding-left: var(--size-4-2);
+	max-width: 100%;
 }
 
 .honcho-chat-assistant p:first-child {
@@ -361,7 +519,7 @@ details[open] > .honcho-group-summary::before {
 }
 
 .honcho-chat-streaming {
-	opacity: 0.9;
+	opacity: 0.85;
 }
 
 .honcho-chat-stream-content p:first-child {
@@ -373,12 +531,13 @@ details[open] > .honcho-group-summary::before {
 }
 
 .honcho-chat-loading {
-	color: var(--text-muted);
-	font-style: italic;
-	font-size: var(--font-ui-small);
+	color: var(--text-faint);
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
 	padding: var(--size-4-1);
 }
 
+/* Input area */
 .honcho-chat-input-area {
 	display: flex;
 	flex-direction: column;
@@ -389,11 +548,11 @@ details[open] > .honcho-group-summary::before {
 	width: 100%;
 	padding: var(--size-4-2);
 	border: 1px solid var(--background-modifier-border);
-	border-radius: var(--radius-s);
+	border-radius: 0;
 	background: var(--background-primary);
 	color: var(--text-normal);
 	font-size: var(--font-ui-small);
-	font-family: var(--font-interface);
+	font-family: var(--font-monospace);
 	resize: vertical;
 }
 
@@ -427,7 +586,8 @@ details[open] > .honcho-group-summary::before {
 	padding: var(--size-4-2);
 	margin-bottom: var(--size-4-3);
 	background: var(--background-secondary);
-	border-radius: var(--radius-s);
+	border: 1px solid var(--background-modifier-border);
+	border-left: 3px solid var(--text-faint);
 }
 
 .honcho-queue-progress {
@@ -439,23 +599,24 @@ details[open] > .honcho-group-summary::before {
 
 .honcho-progress-bar {
 	flex: 1;
-	height: 6px;
+	height: 3px;
 	min-width: 100px;
 	background: var(--background-modifier-border);
-	border-radius: 3px;
 	overflow: hidden;
 }
 
 .honcho-progress-fill {
 	height: 100%;
 	background: var(--interactive-accent);
-	border-radius: 3px;
 	transition: width 0.3s ease;
 }
 
 .honcho-queue-label {
 	font-size: var(--font-ui-smaller);
-	color: var(--text-muted);
+	font-family: var(--font-monospace);
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--text-faint);
 }
 
 .honcho-queue-text {
@@ -479,7 +640,9 @@ details[open] > .honcho-group-summary::before {
 .honcho-session-list {
 	display: flex;
 	flex-direction: column;
-	gap: var(--size-4-2);
+	gap: 1px;
+	background: var(--background-modifier-border);
+	border: 1px solid var(--background-modifier-border);
 }
 
 .honcho-session-card {
@@ -488,12 +651,13 @@ details[open] > .honcho-group-summary::before {
 	justify-content: space-between;
 	gap: var(--size-4-2);
 	padding: var(--size-4-2) var(--size-4-3);
-	background: var(--background-secondary);
-	border-radius: var(--radius-s);
-	border-left: 3px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	border-left: 3px solid transparent;
+	transition: border-left-color 0.1s ease;
 }
 
 .honcho-session-card:hover {
+	background: var(--background-secondary);
 	border-left-color: var(--interactive-accent);
 }
 
@@ -513,28 +677,31 @@ details[open] > .honcho-group-summary::before {
 
 .honcho-session-details {
 	font-size: var(--font-ui-smaller);
-	color: var(--text-muted);
+	font-family: var(--font-monospace);
+	color: var(--text-faint);
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 	margin-top: 2px;
 }
 
+/* Badges: monospace, uppercase, no radius */
 .honcho-session-badge {
 	display: inline-block;
 	font-size: var(--font-ui-smaller);
-	padding: 1px 6px;
-	border-radius: var(--radius-s);
+	font-family: var(--font-monospace);
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	padding: 1px 5px;
+	border: 1px solid currentColor;
 	margin-top: 4px;
 }
 
 .honcho-badge-active {
-	background: var(--background-modifier-success);
 	color: var(--text-success);
 }
 
 .honcho-badge-inactive {
-	background: var(--background-modifier-border);
 	color: var(--text-faint);
 }
 
@@ -546,8 +713,11 @@ details[open] > .honcho-group-summary::before {
 
 .honcho-btn-small {
 	font-size: var(--font-ui-smaller);
+	font-family: var(--font-monospace);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
 	padding: var(--size-4-1) var(--size-4-2);
-	border-radius: var(--radius-s);
+	border-radius: 0;
 	cursor: pointer;
 }
 
@@ -568,8 +738,9 @@ details[open] > .honcho-group-summary::before {
 }
 
 .honcho-page-label {
-	font-size: var(--font-ui-small);
-	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	font-family: var(--font-monospace);
+	color: var(--text-faint);
 }
 
 .honcho-dream-section {
@@ -582,11 +753,14 @@ details[open] > .honcho-group-summary::before {
 
 .honcho-btn-dream {
 	padding: var(--size-4-1) var(--size-4-4);
-	border-radius: var(--radius-s);
-	font-size: var(--font-ui-small);
+	border-radius: 0;
+	font-size: var(--font-ui-smaller);
+	font-family: var(--font-monospace);
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
 	cursor: pointer;
-	background: var(--background-secondary-alt);
-	color: var(--text-normal);
+	background: transparent;
+	color: var(--text-faint);
 	border: 1px solid var(--background-modifier-border);
 }
 
@@ -604,12 +778,15 @@ details[open] > .honcho-group-summary::before {
 	margin-bottom: var(--size-4-1);
 }
 
+/* Pills: 9999px is correct here -- these are true pill labels */
 .honcho-context-tag {
 	font-size: var(--font-ui-smaller);
+	font-family: var(--font-monospace);
 	padding: 1px 8px;
-	border-radius: var(--radius-s);
-	background: var(--background-secondary-alt);
-	color: var(--text-accent);
+	border-radius: 9999px;
+	background: transparent;
+	color: var(--text-faint);
+	border: 1px solid var(--background-modifier-border);
 }
 
 /* -- Code Block Renderer ------------------------------------------------ */
@@ -617,13 +794,11 @@ details[open] > .honcho-group-summary::before {
 .honcho-block-error {
 	color: var(--text-error);
 	font-size: var(--font-ui-small);
-	font-style: italic;
 }
 
 .honcho-block-empty {
-	color: var(--text-muted);
+	color: var(--text-faint);
 	font-size: var(--font-ui-small);
-	font-style: italic;
 }
 
 .honcho-block-results {
@@ -638,7 +813,6 @@ details[open] > .honcho-group-summary::before {
 	gap: 2px;
 	padding: var(--size-4-1) var(--size-4-2);
 	background: var(--background-secondary);
-	border-radius: var(--radius-s);
 	border-left: 2px solid var(--interactive-accent);
 	font-size: var(--font-ui-small);
 }
@@ -646,6 +820,7 @@ details[open] > .honcho-group-summary::before {
 .honcho-block-date {
 	color: var(--text-faint);
 	font-size: var(--font-ui-smaller);
+	font-family: var(--font-monospace);
 }
 
 .honcho-block-content {
@@ -667,7 +842,7 @@ details[open] > .honcho-group-summary::before {
 .honcho-block-representation {
 	padding: var(--size-4-2);
 	background: var(--background-secondary);
-	border-radius: var(--radius-s);
+	border-left: 3px solid var(--interactive-accent);
 	font-size: var(--font-ui-small);
 	line-height: 1.5;
 }

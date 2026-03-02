@@ -12,8 +12,8 @@ const fs = require("fs") as typeof import("fs");
 const nodePath = require("path") as typeof import("path");
 const os = require("os") as typeof import("os");
 
-const CONFIG_DIR = nodePath.join(os.homedir(), ".honcho");
-const CONFIG_FILE = nodePath.join(CONFIG_DIR, "config.json");
+function getConfigDir(): string { return nodePath.join(os.homedir(), ".honcho"); }
+function getConfigFile(): string { return nodePath.join(getConfigDir(), "config.json"); }
 
 interface HostBlock {
 	workspace?: string;
@@ -43,12 +43,15 @@ export interface GlobalDefaults {
  * Read ~/.honcho/config.json and extract defaults for the obsidian host.
  * Returns only defined values -- caller merges over plugin defaults.
  * Never throws; returns empty object on any failure.
+ *
+ * @param configFilePath - override config file path (used in tests)
  */
-export function loadGlobalDefaults(): GlobalDefaults {
-	if (!fs.existsSync(CONFIG_FILE)) return {};
+export function loadGlobalDefaults(configFilePath?: string): GlobalDefaults {
+	const cfgFile = configFilePath ?? getConfigFile();
+	if (!fs.existsSync(cfgFile)) return {};
 
 	try {
-		const raw: GlobalConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+		const raw: GlobalConfig = JSON.parse(fs.readFileSync(cfgFile, "utf-8"));
 		const host = raw.hosts?.["obsidian"];
 		const defaults: GlobalDefaults = {};
 
@@ -80,23 +83,28 @@ export function loadGlobalDefaults(): GlobalDefaults {
  *
  * Never throws; silently fails on write errors.
  */
-export function saveGlobalConfig(settings: {
-	apiKey: string;
-	peerName: string;
-	workspace: string;
-	baseUrl?: string;
-}): void {
+export function saveGlobalConfig(
+	settings: {
+		apiKey: string;
+		peerName: string;
+		workspace: string;
+		baseUrl?: string;
+	},
+	configFilePath?: string
+): void {
+	const cfgFile = configFilePath ?? getConfigFile();
+	const cfgDir = nodePath.dirname(cfgFile);
 	try {
 		// Ensure directory
-		if (!fs.existsSync(CONFIG_DIR)) {
-			fs.mkdirSync(CONFIG_DIR, { recursive: true });
+		if (!fs.existsSync(cfgDir)) {
+			fs.mkdirSync(cfgDir, { recursive: true });
 		}
 
 		// Read existing (preserves other hosts' blocks)
 		let existing: GlobalConfig = {};
-		if (fs.existsSync(CONFIG_FILE)) {
+		if (fs.existsSync(cfgFile)) {
 			try {
-				existing = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+				existing = JSON.parse(fs.readFileSync(cfgFile, "utf-8"));
 			} catch {
 				// Corrupt file -- start fresh but don't clobber, merge below
 			}
@@ -118,7 +126,7 @@ export function saveGlobalConfig(settings: {
 			existing.endpoint.baseUrl = settings.baseUrl;
 		}
 
-		fs.writeFileSync(CONFIG_FILE, JSON.stringify(existing, null, 2));
+		fs.writeFileSync(cfgFile, JSON.stringify(existing, null, 2));
 	} catch {
 		// Best-effort: don't break the plugin if filesystem write fails
 	}

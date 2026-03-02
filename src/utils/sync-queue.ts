@@ -34,11 +34,13 @@ export class SyncQueue {
 	private app: App;
 	private handler: IngestHandler;
 	private minSyncIntervalMs: number;
+	private debounceMs: number;
 
-	constructor(app: App, handler: IngestHandler, minSyncIntervalMs = DEFAULT_MIN_SYNC_INTERVAL_MS) {
+	constructor(app: App, handler: IngestHandler, minSyncIntervalMs = DEFAULT_MIN_SYNC_INTERVAL_MS, debounceMs = DEBOUNCE_MS) {
 		this.app = app;
 		this.handler = handler;
 		this.minSyncIntervalMs = minSyncIntervalMs;
+		this.debounceMs = debounceMs;
 	}
 
 	setMinSyncInterval(ms: number): void {
@@ -59,7 +61,7 @@ export class SyncQueue {
 		const timer = setTimeout(() => {
 			this.debounceTimers.delete(file.path);
 			this.checkThenEnqueue(file);
-		}, DEBOUNCE_MS);
+		}, this.debounceMs);
 
 		this.debounceTimers.set(file.path, timer);
 	}

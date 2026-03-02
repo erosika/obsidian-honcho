@@ -5,7 +5,9 @@
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
-		"build": "node esbuild.config.mjs production"
+		"build": "node esbuild.config.mjs production",
+		"test": "bun test --preload ./tests/setup.ts",
+		"test:watch": "bun test --watch --preload ./tests/setup.ts"
 	},
 	"devDependencies": {
 		"@types/node": "^22.0.0",
