@@ -279,6 +279,51 @@ details[open] > .honcho-group-summary::before {
 	display: none;
 }
 
+/* -- Briefing zone (note-contextual observations) ----------------------- */
+
+.honcho-briefing-zone {
+	/* Empty when no file is active -- takes no space */
+}
+
+.honcho-briefing-zone:not(:empty) {
+	margin-bottom: var(--size-4-4);
+	padding-bottom: var(--size-4-4);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.honcho-active-note {
+	display: flex;
+	align-items: baseline;
+	gap: var(--size-4-2);
+	margin-bottom: var(--size-4-2);
+}
+
+.honcho-active-note-label {
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	text-transform: uppercase;
+	letter-spacing: 0.1em;
+	color: var(--text-faint);
+	flex-shrink: 0;
+}
+
+.honcho-active-note-title {
+	font-size: var(--font-ui-small);
+	color: var(--interactive-accent);
+	font-weight: var(--font-semibold);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.honcho-briefing-content {
+	/* Inherits .honcho-representation styles */
+	border-left: 2px solid var(--interactive-accent);
+	border-right: none;
+	border-top: none;
+	border-bottom: none;
+}
+
 /* -- Expand button (show N more items) ---------------------------------- */
 
 .honcho-expand-btn {

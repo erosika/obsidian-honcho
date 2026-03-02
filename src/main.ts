@@ -276,6 +276,17 @@ export default class HonchoPlugin extends Plugin {
 			})
 		);
 
+		// -- Notify sidebar of active file changes for contextual briefing --
+		this.registerEvent(
+			this.app.workspace.on("file-open", (file) => {
+				for (const leaf of this.app.workspace.getLeavesOfType(HONCHO_VIEW_TYPE)) {
+					if (leaf.view instanceof HonchoSidebarView) {
+						leaf.view.setActiveFile(file ?? null);
+					}
+				}
+			})
+		);
+
 		// -- Session lifecycle: rename --
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {

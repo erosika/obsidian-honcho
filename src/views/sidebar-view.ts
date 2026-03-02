@@ -1,4 +1,4 @@
-import { ItemView, MarkdownRenderer, type WorkspaceLeaf } from "obsidian";
+import { ItemView, MarkdownRenderer, TFile, type WorkspaceLeaf } from "obsidian";
 import type HonchoPlugin from "../main";
 import { findStaleNotes } from "../utils/sync-status";
 
@@ -84,6 +84,13 @@ export class HonchoSidebarView extends ItemView {
 	private connectionCache: { ok: boolean; ts: number } | null = null;
 	private static readonly CONN_CACHE_TTL = 60_000;
 
+	// Active file context
+	private activeFile: TFile | null = null;
+	private briefingEl: HTMLElement | null = null;
+	private briefingTimer: ReturnType<typeof setTimeout> | null = null;
+	private briefingCache: Map<string, { rep: string; ts: number }> = new Map();
+	private static readonly BRIEFING_CACHE_TTL = 5 * 60 * 1000;
+
 	// Chat state (persists across re-renders)
 	private chatMessages: ChatMessage[] = [];
 	private chatSending = false;
@@ -114,12 +121,87 @@ export class HonchoSidebarView extends ItemView {
 		container.addClass("honcho-sidebar");
 
 		this.containerDiv = container;
+
+		// Seed active file from whatever is open right now
+		this.activeFile = this.app.workspace.getActiveFile();
 		await this.render();
 	}
 
 	async onClose(): Promise<void> {
 		this.chatAbortController?.abort();
 		this.chatAbortController = null;
+		if (this.briefingTimer) clearTimeout(this.briefingTimer);
+		this.briefingTimer = null;
+	}
+
+	/** Called by main.ts on every file-open event. */
+	setActiveFile(file: TFile | null): void {
+		this.activeFile = file;
+		// Debounce: ignore rapid tab switching
+		if (this.briefingTimer) clearTimeout(this.briefingTimer);
+		this.briefingTimer = setTimeout(() => {
+			this.briefingTimer = null;
+			void this.refreshBriefing();
+		}, 400);
+	}
+
+	private async refreshBriefing(): Promise<void> {
+		const el = this.briefingEl;
+		if (!el) return;
+		el.empty();
+
+		const file = this.activeFile;
+		if (!file) return;
+
+		const client = this.plugin.getClient();
+		if (!client) return;
+
+		// Active note header
+		const noteHeader = el.createDiv({ cls: "honcho-active-note" });
+		noteHeader.createSpan({ cls: "honcho-active-note-label", text: "viewing" });
+		noteHeader.createSpan({ cls: "honcho-active-note-title", text: file.basename });
+
+		// Serve from cache when fresh
+		const cached = this.briefingCache.get(file.path);
+		if (cached && Date.now() - cached.ts < HonchoSidebarView.BRIEFING_CACHE_TTL) {
+			if (cached.rep) {
+				const repContent = el.createDiv({ cls: "honcho-briefing-content honcho-representation" });
+				await MarkdownRenderer.render(this.app, cached.rep, repContent, "", this);
+				this.postProcessRepresentation(repContent);
+			}
+			return;
+		}
+
+		const loadEl = el.createEl("p", { text: "fetching context\u2026", cls: "honcho-loading" });
+
+		try {
+			const cache = this.app.metadataCache.getFileCache(file);
+			const tags = (cache?.tags ?? []).map((t) => t.tag).join(" ");
+			const headings = (cache?.headings ?? []).map((h) => h.heading).slice(0, 3).join(" ");
+			const searchQuery = [file.basename, tags, headings].filter(Boolean).join(" ");
+
+			const rep = await client.getPeerRepresentation(
+				this.plugin.getWorkspaceId(),
+				this.plugin.getPeerId(),
+				{ search_query: searchQuery, search_top_k: 5 }
+			);
+
+			loadEl.remove();
+
+			this.briefingCache.set(file.path, {
+				rep: rep.representation ?? "",
+				ts: Date.now(),
+			});
+
+			if (rep.representation?.trim()) {
+				const repContent = el.createDiv({ cls: "honcho-briefing-content honcho-representation" });
+				await MarkdownRenderer.render(this.app, rep.representation, repContent, "", this);
+				this.postProcessRepresentation(repContent);
+			}
+		} catch {
+			loadEl.remove();
+			// Fail silently -- briefing is best-effort
+		}
 	}
 
 	async render(): Promise<void> {
@@ -127,9 +209,10 @@ export class HonchoSidebarView extends ItemView {
 		const el = this.containerDiv;
 		el.empty();
 
-		// Invalidate chat element refs -- renderChat will create fresh ones
+		// Invalidate element refs -- will be reassigned below
 		this.chatEl = null;
 		this.chatInputEl = null;
+		this.briefingEl = null;
 
 		// Header
 		const header = el.createDiv({ cls: "honcho-sidebar-header" });
@@ -208,6 +291,11 @@ export class HonchoSidebarView extends ItemView {
 
 			// Sync status
 			await this.renderSyncStatus(body);
+
+			// Briefing zone: note-contextual, updates asynchronously on file switch
+			const briefingZone = body.createDiv({ cls: "honcho-briefing-zone" });
+			this.briefingEl = briefingZone;
+			void this.refreshBriefing();
 
 			// Chat -- above identity so it's immediately reachable
 			this.renderChat(body);
@@ -431,6 +519,11 @@ export class HonchoSidebarView extends ItemView {
 		contentEl.setText("\u2026");
 		this.chatEl.scrollTop = this.chatEl.scrollHeight;
 
+		// Prepend active note context so the LLM can ground its answer
+		const contextualQuery = this.activeFile
+			? `[Context: viewing "${this.activeFile.basename}"]\n\n${query}`
+			: query;
+
 		let accumulated = "";
 		this.chatAbortController = new AbortController();
 
@@ -438,7 +531,7 @@ export class HonchoSidebarView extends ItemView {
 			const stream = client.peerChatStream(
 				this.plugin.getWorkspaceId(),
 				this.plugin.getPeerId(),
-				query,
+				contextualQuery,
 				{ reasoning_level: "medium" },
 				this.chatAbortController.signal
 			);
@@ -459,7 +552,7 @@ export class HonchoSidebarView extends ItemView {
 						const resp = await client.peerChat(
 							this.plugin.getWorkspaceId(),
 							this.plugin.getPeerId(),
-							query,
+							contextualQuery,
 							{ reasoning_level: "medium" }
 						);
 						accumulated = resp.content ?? "No response.";
