@@ -100,9 +100,8 @@ export class StaleNotesModal extends Modal {
 		btn.setText("Ingesting...");
 
 		try {
-			const result = await ingestNote(this.ctx, info.file, { force: true });
-			const n = result.messages.length;
-			new Notice(`Re-ingested ${info.file.basename}: ${n} message${n !== 1 ? "s" : ""}`);
+			await ingestNote(this.ctx, info.file, { force: true });
+			new Notice(`Re-synced ${info.file.basename}`);
 			// Remove from list
 			this.staleNotes = this.staleNotes.filter((s) => s.file.path !== info.file.path);
 			this.renderList();

@@ -268,9 +268,8 @@ export class SessionManagerModal extends Modal {
 				this.peerId,
 				this.trackFrontmatter
 			);
-			const result = await ingestNote(ctx, file, { force: true });
-			const n = result.messages.length;
-			new Notice(`Re-ingested ${file.basename}: ${n} message${n !== 1 ? "s" : ""}`);
+			await ingestNote(ctx, file, { force: true });
+			new Notice(`Re-synced ${file.basename}`);
 			await this.loadSessions();
 		} catch (err) {
 			new Notice(`Re-ingest failed: ${err instanceof Error ? err.message : String(err)}`);

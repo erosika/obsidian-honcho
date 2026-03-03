@@ -1,6 +1,7 @@
-import { ItemView, MarkdownRenderer, TFile, type WorkspaceLeaf } from "obsidian";
+import { ItemView, MarkdownRenderer, Notice, TFile, type WorkspaceLeaf } from "obsidian";
 import type HonchoPlugin from "../main";
 import { findStaleNotes } from "../utils/sync-status";
+import { normalizeFrontmatterTags, readHonchoFrontmatter } from "../utils/frontmatter";
 
 export const HONCHO_VIEW_TYPE = "honcho-sidebar";
 
@@ -20,6 +21,19 @@ interface ChatMessage {
 	role: "user" | "assistant";
 	content: string;
 }
+
+interface RepresentationEntry {
+	ts: string | null;
+	body: string;
+}
+
+interface FrontmatterSuggestion {
+	tags: Array<{ value: string; confidence: ConfidenceLevel }>;
+	aliases: Array<{ value: string; confidence: ConfidenceLevel }>;
+	properties: Array<{ key: string; value: unknown; confidence: ConfidenceLevel }>;
+}
+
+type ConfidenceLevel = "high" | "medium" | "low";
 
 const CARD_PREFIXES: Array<{ prefix: string; key: string; label: string; cls: string }> = [
 	{ prefix: "PATTERN:", key: "pattern", label: "Patterns", cls: "honcho-group-pattern" },
@@ -87,9 +101,28 @@ export class HonchoSidebarView extends ItemView {
 	// Active file context
 	private activeFile: TFile | null = null;
 	private briefingEl: HTMLElement | null = null;
+	private frontmatterEl: HTMLElement | null = null;
 	private briefingTimer: ReturnType<typeof setTimeout> | null = null;
 	private briefingCache: Map<string, { rep: string; ts: number }> = new Map();
 	private static readonly BRIEFING_CACHE_TTL = 5 * 60 * 1000;
+	private frontmatterCache: Map<string, { suggestion: FrontmatterSuggestion; ts: number }> = new Map();
+	private frontmatterLoadingPath: string | null = null;
+	private frontmatterApplyingPath: string | null = null;
+	private frontmatterAutoSuggestedPaths: Set<string> = new Set();
+	private frontmatterDismissedPaths: Set<string> = new Set();
+	private frontmatterCollapsed = false;
+	private frontmatterAppliedState: Map<
+		string,
+		{ tags: Set<string>; aliases: Set<string>; properties: Set<string> }
+	> = new Map();
+	private static readonly FRONTMATTER_CACHE_TTL = 10 * 60 * 1000;
+
+	// Peer card editing state
+	private peerCardItems: string[] = [];
+	private peerCardHiddenItems: string[] = [];
+	private peerCardEditMode = false;
+	private peerCardDraft = "";
+	private peerCardSaving = false;
 
 	// Chat state (persists across re-renders)
 	private chatMessages: ChatMessage[] = [];
@@ -141,7 +174,10 @@ export class HonchoSidebarView extends ItemView {
 		if (this.briefingTimer) clearTimeout(this.briefingTimer);
 		this.briefingTimer = setTimeout(() => {
 			this.briefingTimer = null;
-			void this.refreshBriefing();
+			void this.refreshFrontmatterSuggestions();
+			if (file && this.plugin.settings.autoSuggestFrontmatterOnOpen) {
+				void this.maybeAutoSuggestFrontmatter(file);
+			}
 		}, 400);
 	}
 
@@ -155,11 +191,6 @@ export class HonchoSidebarView extends ItemView {
 
 		const client = this.plugin.getClient();
 		if (!client) return;
-
-		// Active note header
-		const noteHeader = el.createDiv({ cls: "honcho-active-note" });
-		noteHeader.createSpan({ cls: "honcho-active-note-label", text: "viewing" });
-		noteHeader.createSpan({ cls: "honcho-active-note-title", text: file.basename });
 
 		// Serve from cache when fresh
 		const cached = this.briefingCache.get(file.path);
@@ -213,6 +244,7 @@ export class HonchoSidebarView extends ItemView {
 		this.chatEl = null;
 		this.chatInputEl = null;
 		this.briefingEl = null;
+		this.frontmatterEl = null;
 
 		// Header
 		const header = el.createDiv({ cls: "honcho-sidebar-header" });
@@ -240,6 +272,9 @@ export class HonchoSidebarView extends ItemView {
 		refreshBtn.addEventListener("click", () => {
 			this.connectionCache = null;
 			this.staleCountCache = null;
+			this.frontmatterCache.clear();
+			this.frontmatterAutoSuggestedPaths.clear();
+			this.frontmatterDismissedPaths.clear();
 			this.render();
 		});
 
@@ -279,67 +314,35 @@ export class HonchoSidebarView extends ItemView {
 			await client.getOrCreateWorkspace(workspaceId);
 			await client.getOrCreatePeer(workspaceId, peerId, { observe_me: true });
 
-			// Single API call for card + representation
-			const contextResp = await client.getPeerContext(workspaceId, peerId).catch(() => ({
-				peer_id: peerId,
-				target_id: peerId,
-				representation: null,
-				peer_card: null,
+			// Fetch peer card only (observations are intentionally hidden in sidebar)
+			const cardResp = await client.getPeerCard(workspaceId, peerId).catch(() => ({
+				peer_card: null as string[] | null,
 			}));
+			this.peerCardItems = cardResp.peer_card ?? [];
+			const { visibleItems, hiddenItems } = this.splitPeerCardItems(this.peerCardItems);
+			this.peerCardHiddenItems = hiddenItems;
+			if (!this.peerCardEditMode) {
+				this.peerCardDraft = visibleItems.join("\n");
+			}
 
 			body.empty();
 
 			// Sync status
 			await this.renderSyncStatus(body);
 
-			// Briefing zone: note-contextual, updates asynchronously on file switch
-			const briefingZone = body.createDiv({ cls: "honcho-briefing-zone" });
-			this.briefingEl = briefingZone;
-			void this.refreshBriefing();
+			// Suggested frontmatter for active note
+			this.renderFrontmatterSection(body);
 
-			// Chat -- above identity so it's immediately reachable
+			// Chat
 			this.renderChat(body);
 
-			// Peer card -- grouped by type
-			if (contextResp.peer_card && contextResp.peer_card.length > 0) {
-				const groups = groupCardItems(contextResp.peer_card);
-				for (const group of groups) {
-					this.renderCardGroup(body, group);
-				}
-			}
-
-			// Representation section -- collapsed by default; it's a log, not a profile
-			if (contextResp.representation) {
-				const repSection = body.createDiv({ cls: "honcho-section honcho-rep-section" });
-				const repDetails = repSection.createEl("details");
-				const repSummary = repDetails.createEl("summary", { cls: "honcho-group-summary" });
-				repSummary.createEl("h4", { text: "Observations" });
-
-				// Count bracketed timestamp entries as a proxy for observation count
-				const entryCount = (contextResp.representation.match(/^\[/gm) ?? []).length;
-				if (entryCount > 0) {
-					repSummary.createSpan({ text: String(entryCount), cls: "honcho-group-count" });
-				}
-
-				const repContent = repDetails.createDiv({ cls: "honcho-representation" });
-				await MarkdownRenderer.render(
-					this.app,
-					contextResp.representation,
-					repContent,
-					"",
-					this
-				);
-				this.postProcessRepresentation(repContent);
-			}
-
-			if (
-				(!contextResp.peer_card || contextResp.peer_card.length === 0) &&
-				!contextResp.representation
-			) {
-				body.createEl("p", {
-					text: "No data yet. Ingest some notes to build your identity.",
-					cls: "honcho-sidebar-empty",
-				});
+			// Identity + peer card (unified section)
+			const groups = groupCardItems(visibleItems);
+			const identityGroup = groups.find((g) => g.key === "general");
+			this.renderIdentityCard(body, identityGroup?.items ?? []);
+			for (const group of groups) {
+				if (group.key === "general") continue;
+				this.renderCardGroup(body, group);
 			}
 
 		} catch (err) {
@@ -349,6 +352,821 @@ export class HonchoSidebarView extends ItemView {
 				cls: "honcho-error",
 			});
 		}
+	}
+
+	private renderIdentityCard(parent: HTMLElement, items: string[]): void {
+		const section = parent.createDiv({ cls: "honcho-section honcho-card-group honcho-group-general" });
+		const details = section.createEl("details", { attr: { open: "" } });
+		const summary = details.createEl("summary", { cls: "honcho-group-summary" });
+		summary.createEl("h4", { text: "Identity" });
+		summary.createSpan({ text: String(items.length), cls: "honcho-group-count" });
+
+		const actions = summary.createDiv({ cls: "honcho-group-actions" });
+		if (!this.peerCardEditMode) {
+			const editBtn = actions.createEl("button", {
+				text: "Edit",
+				cls: "honcho-btn-small",
+			});
+			editBtn.addEventListener("click", (evt) => {
+				evt.preventDefault();
+				evt.stopPropagation();
+				this.peerCardEditMode = true;
+				this.peerCardDraft = items.join("\n");
+				void this.render();
+			});
+		} else {
+			const cancelBtn = actions.createEl("button", {
+				text: "Cancel",
+				cls: "honcho-btn-small",
+			});
+			cancelBtn.disabled = this.peerCardSaving;
+			cancelBtn.addEventListener("click", (evt) => {
+				evt.preventDefault();
+				evt.stopPropagation();
+				this.cancelIdentityEdits();
+			});
+
+			const saveBtn = actions.createEl("button", {
+				text: this.peerCardSaving ? "Saving..." : "Save",
+				cls: "honcho-btn-small mod-cta",
+			});
+			saveBtn.disabled = this.peerCardSaving;
+			saveBtn.addEventListener("click", (evt) => {
+				evt.preventDefault();
+				evt.stopPropagation();
+				void this.saveIdentityEdits();
+			});
+		}
+
+		if (this.peerCardEditMode) {
+			const input = details.createEl("textarea", {
+				cls: "honcho-identity-editor-input",
+				attr: {
+					rows: "8",
+					placeholder: "One peer card item per line",
+				},
+			});
+			input.value = this.peerCardDraft;
+			input.addEventListener("input", () => {
+				this.peerCardDraft = input.value;
+			});
+
+			details.createEl("p", {
+				text: "One item per line. Use PATTERN:, TRAIT:, or PREFERENCE: prefixes to control grouping.",
+				cls: "honcho-frontmatter-note",
+			});
+			return;
+		}
+
+		if (items.length === 0) {
+			details.createEl("p", {
+				text: "No peer card yet. Click Edit to add identity items.",
+				cls: "honcho-sidebar-empty",
+			});
+			return;
+		}
+
+		const list = details.createEl("ul", { cls: "honcho-card-list" });
+		for (const item of items) {
+			this.renderCardItem(list, {
+				key: "general",
+				label: "Identity",
+				items: [],
+				cls: "honcho-group-general",
+				collapsed: false,
+			}, item);
+		}
+	}
+
+	private splitPeerCardItems(items: string[]): {
+		visibleItems: string[];
+		hiddenItems: string[];
+	} {
+		const visibleItems: string[] = [];
+		const hiddenItems: string[] = [];
+		for (const item of items) {
+			if (HIDDEN_PREFIXES.some((prefix) => item.startsWith(prefix))) {
+				hiddenItems.push(item);
+			} else {
+				visibleItems.push(item);
+			}
+		}
+		return { visibleItems, hiddenItems };
+	}
+
+	private cancelIdentityEdits(): void {
+		this.peerCardEditMode = false;
+		const { visibleItems } = this.splitPeerCardItems(this.peerCardItems);
+		this.peerCardDraft = visibleItems.join("\n");
+		void this.render();
+	}
+
+	private async saveIdentityEdits(): Promise<void> {
+		if (this.peerCardSaving) return;
+		const client = this.plugin.getClient();
+		if (!client) return;
+
+		this.peerCardSaving = true;
+		await this.render();
+		try {
+			const editedItems = Array.from(
+				new Set(
+					this.peerCardDraft
+						.split("\n")
+						.map((line) => line.trim())
+						.filter((line) => line.length > 0)
+				)
+			);
+			const nextCard = [...this.peerCardHiddenItems, ...editedItems];
+			await client.setPeerCard(
+				this.plugin.getWorkspaceId(),
+				this.plugin.getPeerId(),
+				nextCard
+			);
+
+			this.peerCardItems = nextCard;
+			this.peerCardEditMode = false;
+			this.peerCardDraft = editedItems.join("\n");
+			new Notice(`Saved identity peer card (${editedItems.length} items)`);
+		} catch (err) {
+			new Notice(`Failed to save peer card: ${err instanceof Error ? err.message : String(err)}`);
+		} finally {
+			this.peerCardSaving = false;
+			await this.render();
+		}
+	}
+
+	private renderFrontmatterSection(parent: HTMLElement): void {
+		const section = parent.createDiv({ cls: "honcho-section honcho-frontmatter-section" });
+		this.frontmatterEl = section;
+		void this.refreshFrontmatterSuggestions();
+	}
+
+	private async refreshFrontmatterSuggestions(): Promise<void> {
+		const section = this.frontmatterEl;
+		if (!section) return;
+		section.empty();
+
+		const header = section.createDiv({ cls: "honcho-section-header" });
+		const titleBtn = header.createEl("button", {
+			text: "Suggested Frontmatter",
+			cls: "honcho-section-toggle",
+		});
+		titleBtn.addClass(this.frontmatterCollapsed ? "is-collapsed" : "is-expanded");
+		titleBtn.addEventListener("click", () => {
+			this.frontmatterCollapsed = !this.frontmatterCollapsed;
+			void this.refreshFrontmatterSuggestions();
+		});
+		const actions = header.createDiv({ cls: "honcho-inline-actions" });
+		const infoBtn = actions.createEl("button", {
+			cls: "honcho-icon-btn clickable-icon",
+			attr: {
+				"aria-label": "How suggestions work",
+				title: "Suggestions combine this note context (title, tags, headings, links, excerpt) with existing Honcho memory. As more notes are ingested, suggestion quality usually improves.",
+			},
+		});
+		infoBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>`;
+
+		const settingsBtn = actions.createEl("button", {
+			cls: "honcho-icon-btn clickable-icon",
+			attr: { "aria-label": "Frontmatter settings", title: "Open Honcho settings" },
+		});
+		settingsBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1.2 1.83l-.16.07a2 2 0 0 1-2.16-.35l-.13-.13a2 2 0 0 0-2.83 0l-.31.31a2 2 0 0 0 0 2.83l.13.13a2 2 0 0 1 .35 2.16l-.07.16A2 2 0 0 1 2 12.78V13.22a2 2 0 0 0 2 2h.18a2 2 0 0 1 1.83 1.2l.07.16a2 2 0 0 1-.35 2.16l-.13.13a2 2 0 0 0 0 2.83l.31.31a2 2 0 0 0 2.83 0l.13-.13a2 2 0 0 1 2.16-.35l.16.07a2 2 0 0 1 1.2 1.83V22a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1.2-1.83l.16-.07a2 2 0 0 1 2.16.35l.13.13a2 2 0 0 0 2.83 0l.31-.31a2 2 0 0 0 0-2.83l-.13-.13a2 2 0 0 1-.35-2.16l.07-.16A2 2 0 0 1 22 13.22v-.44a2 2 0 0 0-2-2h-.18a2 2 0 0 1-1.83-1.2l-.07-.16a2 2 0 0 1 .35-2.16l.13-.13a2 2 0 0 0 0-2.83l-.31-.31a2 2 0 0 0-2.83 0l-.13.13a2 2 0 0 1-2.16.35l-.16-.07a2 2 0 0 1-1.2-1.83V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>`;
+		settingsBtn.addEventListener("click", () => this.openFrontmatterSettings());
+
+		if (this.frontmatterCollapsed) return;
+
+		const file = this.activeFile;
+		const cached = file ? this.frontmatterCache.get(file.path) : null;
+		const hasCachedSuggestion = !!cached;
+		const suggestBtn = actions.createEl("button", {
+			text: file && this.frontmatterLoadingPath === file.path
+				? (hasCachedSuggestion ? "Refreshing..." : "Suggesting...")
+				: (hasCachedSuggestion ? "Refresh" : "Suggest"),
+			cls: "honcho-btn-small",
+		});
+
+		if (!file) {
+			suggestBtn.disabled = true;
+			section.createEl("p", {
+				text: "Open a note to generate frontmatter suggestions.",
+				cls: "honcho-sidebar-empty",
+			});
+			return;
+		}
+
+		const cache = this.app.metadataCache.getFileCache(file);
+		const isHonchoGenerated = !!cache?.frontmatter?.honcho_generated;
+		if (isHonchoGenerated) {
+			suggestBtn.disabled = true;
+			section.createEl("p", {
+				text: "Suggestions are hidden for Honcho-generated notes.",
+				cls: "honcho-sidebar-empty",
+			});
+			return;
+		}
+
+		if (this.frontmatterDismissedPaths.has(file.path)) {
+			suggestBtn.disabled = true;
+			const showBtn = actions.createEl("button", {
+				text: "Show",
+				cls: "honcho-btn-small",
+			});
+			showBtn.addEventListener("click", () => {
+				this.frontmatterDismissedPaths.delete(file.path);
+				void this.refreshFrontmatterSuggestions();
+			});
+			section.createEl("p", {
+				text: "Suggestions dismissed for this note.",
+				cls: "honcho-sidebar-empty",
+			});
+			return;
+		}
+
+		suggestBtn.disabled = this.frontmatterLoadingPath === file.path;
+		suggestBtn.addEventListener("click", () => {
+			void this.generateFrontmatterSuggestion(file);
+		});
+		const dismissBtn = actions.createEl("button", {
+			text: "Dismiss",
+			cls: "honcho-btn-small",
+		});
+		dismissBtn.addEventListener("click", () => {
+			this.frontmatterDismissedPaths.add(file.path);
+			void this.refreshFrontmatterSuggestions();
+		});
+
+		section.createEl("p", {
+			text: `Active note: ${file.basename}`,
+			cls: "honcho-frontmatter-note",
+		});
+
+		const isFresh = !!cached && Date.now() - cached.ts < HonchoSidebarView.FRONTMATTER_CACHE_TTL;
+		const suggestion = isFresh ? cached.suggestion : null;
+		const existing = this.getExistingFrontmatterState(file);
+		const isApplying = this.frontmatterApplyingPath === file.path;
+
+		if (!suggestion) {
+			if (this.plugin.settings.autoSuggestFrontmatterOnOpen && this.frontmatterLoadingPath !== file.path) {
+				void this.maybeAutoSuggestFrontmatter(file);
+			}
+			if (this.frontmatterLoadingPath === file.path) {
+				section.createEl("p", { text: "Generating suggestions...", cls: "honcho-loading" });
+			} else {
+				section.createEl("p", {
+					text: "Generate suggestions based on this note and your Honcho identity.",
+					cls: "honcho-sidebar-empty",
+				});
+			}
+			return;
+		}
+
+		if (suggestion.tags.length === 0 && suggestion.aliases.length === 0 && suggestion.properties.length === 0) {
+			section.createEl("p", {
+				text: "No useful frontmatter suggestions right now.",
+				cls: "honcho-sidebar-empty",
+			});
+			return;
+		}
+
+		const applyBtn = actions.createEl("button", {
+			text: "Apply missing",
+			cls: "honcho-btn-small",
+		});
+		applyBtn.disabled = isApplying;
+		applyBtn.addEventListener("click", () => {
+			void this.applyFrontmatterSuggestion(file, suggestion);
+		});
+
+		const list = section.createDiv({ cls: "honcho-frontmatter-list" });
+
+		if (suggestion.tags.length > 0) {
+			for (const tag of suggestion.tags) {
+				const row = list.createDiv({ cls: "honcho-frontmatter-row" });
+				row.createSpan({ cls: "honcho-frontmatter-key", text: "tag" });
+				const valueWrap = row.createDiv({ cls: "honcho-frontmatter-value-wrap" });
+				valueWrap.createSpan({ cls: "honcho-frontmatter-value", text: `#${tag.value}` });
+				valueWrap.createSpan({
+					cls: `honcho-confidence honcho-confidence-${tag.confidence}`,
+					text: tag.confidence,
+				});
+				const exists = existing.tags.has(tag.value);
+				const applyOne = row.createEl("button", {
+					text: exists ? "Added" : "Apply",
+					cls: "honcho-btn-small",
+				});
+				applyOne.disabled = exists || isApplying;
+				applyOne.addEventListener("click", () => {
+					void this.applySingleTag(file, tag.value);
+				});
+			}
+		}
+
+		if (suggestion.aliases.length > 0) {
+			for (const alias of suggestion.aliases) {
+				const row = list.createDiv({ cls: "honcho-frontmatter-row" });
+				row.createSpan({ cls: "honcho-frontmatter-key", text: "alias" });
+				const valueWrap = row.createDiv({ cls: "honcho-frontmatter-value-wrap" });
+				valueWrap.createSpan({
+					cls: "honcho-frontmatter-value",
+					text: alias.value,
+				});
+				valueWrap.createSpan({
+					cls: `honcho-confidence honcho-confidence-${alias.confidence}`,
+					text: alias.confidence,
+				});
+				const exists = existing.aliases.has(alias.value);
+				const applyOne = row.createEl("button", {
+					text: exists ? "Added" : "Apply",
+					cls: "honcho-btn-small",
+				});
+				applyOne.disabled = exists || isApplying;
+				applyOne.addEventListener("click", () => {
+					void this.applySingleAlias(file, alias.value);
+				});
+			}
+		}
+
+		if (suggestion.properties.length > 0) {
+			for (const prop of suggestion.properties) {
+				const row = list.createDiv({ cls: "honcho-frontmatter-row" });
+				row.createSpan({ cls: "honcho-frontmatter-key", text: prop.key });
+				const valueWrap = row.createDiv({ cls: "honcho-frontmatter-value-wrap" });
+				valueWrap.createSpan({
+					cls: "honcho-frontmatter-value",
+					text: this.stringifySuggestionValue(prop.value),
+				});
+				valueWrap.createSpan({
+					cls: `honcho-confidence honcho-confidence-${prop.confidence}`,
+					text: prop.confidence,
+				});
+				const exists = existing.properties.has(prop.key);
+				const applyOne = row.createEl("button", {
+					text: exists ? "Added" : "Apply",
+					cls: "honcho-btn-small",
+				});
+				applyOne.disabled = exists || isApplying;
+				applyOne.addEventListener("click", () => {
+					void this.applySingleProperty(file, prop.key, prop.value);
+				});
+			}
+		}
+	}
+
+	private openFrontmatterSettings(): void {
+		this.app.commands.executeCommandById("app:open-settings");
+		new Notice("Open Honcho settings > Frontmatter");
+	}
+
+	private async generateFrontmatterSuggestion(file: TFile): Promise<void> {
+		const client = this.plugin.getClient();
+		if (!client) return;
+
+		if (this.frontmatterLoadingPath) return;
+		this.frontmatterDismissedPaths.delete(file.path);
+		this.frontmatterLoadingPath = file.path;
+		await this.refreshFrontmatterSuggestions();
+
+		try {
+			const content = await this.app.vault.cachedRead(file);
+			const cache = this.app.metadataCache.getFileCache(file);
+			const inlineTags = (cache?.tags ?? []).map((t) => t.tag);
+			const fmTags = normalizeFrontmatterTags(cache?.frontmatter?.tags).map(
+				(t) => (t.startsWith("#") ? t : "#" + t)
+			);
+			const tags = [...new Set([...inlineTags, ...fmTags])];
+			const headings = (cache?.headings ?? []).map((h) => h.heading).slice(0, 8);
+			const links = (cache?.links ?? []).map((l) => l.link).slice(0, 20);
+
+			const prompt = [
+				"You are generating Obsidian YAML frontmatter suggestions for a single note.",
+				"Return ONLY valid JSON with this exact shape:",
+				'{"tags":[{"value":"...","confidence":"high|medium|low"}],"aliases":[{"value":"...","confidence":"high|medium|low"}],"properties":[{"key":"...","value":"...","confidence":"high|medium|low"}]}',
+				"",
+				"Rules:",
+				"- Keep tags short and lowercase (kebab-case).",
+				"- Suggest at most 8 tags and at most 8 properties.",
+				"- Do not include Honcho tracking keys (synced, session, hash, feedback, honcho_*).",
+				"- Only include properties that are directly useful for this note.",
+				"- Use confidence=high only when strongly supported by note content.",
+				"",
+				`Title: ${file.basename}`,
+				`Folder: ${file.parent?.path ?? "/"}`,
+				`Existing tags: ${tags.join(", ") || "(none)"}`,
+				`Headings: ${headings.join(" | ") || "(none)"}`,
+				`Outgoing links: ${links.join(", ") || "(none)"}`,
+				"",
+				"Note excerpt:",
+				content.replace(/^---[\s\S]*?---\n*/, "").trim().slice(0, 1400) || "(empty)",
+			].join("\n");
+
+			const fm = readHonchoFrontmatter(this.app, file);
+			const resp = await client.peerChat(
+				this.plugin.getWorkspaceId(),
+				this.plugin.getPeerId(),
+				prompt,
+				{
+					reasoning_level: this.plugin.settings.frontmatterSuggestionReasoning,
+					session_id: fm.session,
+				}
+			);
+			const parsed = this.parseFrontmatterSuggestion(resp.content ?? "");
+
+			if (!parsed) {
+				new Notice("Could not parse frontmatter suggestions");
+				return;
+			}
+
+			this.frontmatterCache.set(file.path, {
+				suggestion: parsed,
+				ts: Date.now(),
+			});
+		} catch (err) {
+			new Notice(`Suggestion failed: ${err instanceof Error ? err.message : String(err)}`);
+		} finally {
+			this.frontmatterLoadingPath = null;
+			await this.refreshFrontmatterSuggestions();
+		}
+	}
+
+	private parseFrontmatterSuggestion(raw: string): FrontmatterSuggestion | null {
+		const candidates: string[] = [];
+		const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(raw);
+		if (fenced?.[1]) candidates.push(fenced[1].trim());
+		candidates.push(raw.trim());
+
+		const firstBrace = raw.indexOf("{");
+		const lastBrace = raw.lastIndexOf("}");
+		if (firstBrace >= 0 && lastBrace > firstBrace) {
+			candidates.push(raw.slice(firstBrace, lastBrace + 1).trim());
+		}
+
+		for (const text of candidates) {
+			if (!text) continue;
+			try {
+				const parsed = JSON.parse(text) as unknown;
+				const normalized = this.normalizeFrontmatterSuggestion(parsed);
+				if (normalized) return normalized;
+			} catch {
+				// Try next candidate
+			}
+		}
+		return null;
+	}
+
+	private normalizeFrontmatterSuggestion(input: unknown): FrontmatterSuggestion | null {
+		if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+		const obj = input as Record<string, unknown>;
+
+		const tags: Array<{ value: string; confidence: ConfidenceLevel }> = [];
+		const seenTags = new Set<string>();
+		if (Array.isArray(obj.tags)) {
+			for (const tagItem of obj.tags) {
+				if (typeof tagItem === "string") {
+					const value = this.normalizeTag(tagItem);
+					if (value && !seenTags.has(value)) {
+						seenTags.add(value);
+						tags.push({ value, confidence: "medium" });
+					}
+					continue;
+				}
+				if (!tagItem || typeof tagItem !== "object" || Array.isArray(tagItem)) continue;
+				const rec = tagItem as Record<string, unknown>;
+				const value = this.normalizeTag(
+					typeof rec.value === "string" ? rec.value
+						: typeof rec.tag === "string" ? rec.tag
+						: ""
+				);
+				if (!value || seenTags.has(value)) continue;
+				seenTags.add(value);
+				tags.push({
+					value,
+					confidence: this.normalizeConfidence(rec.confidence),
+				});
+			}
+		}
+
+		const aliases: Array<{ value: string; confidence: ConfidenceLevel }> = [];
+		const seenAliases = new Set<string>();
+		if (Array.isArray(obj.aliases)) {
+			for (const aliasItem of obj.aliases) {
+				if (typeof aliasItem === "string") {
+					const value = aliasItem.trim();
+					if (value && !seenAliases.has(value)) {
+						seenAliases.add(value);
+						aliases.push({ value, confidence: "medium" });
+					}
+					continue;
+				}
+				if (!aliasItem || typeof aliasItem !== "object" || Array.isArray(aliasItem)) continue;
+				const rec = aliasItem as Record<string, unknown>;
+				const value = (
+					typeof rec.value === "string" ? rec.value
+						: typeof rec.alias === "string" ? rec.alias
+						: ""
+				).trim();
+				if (!value || seenAliases.has(value)) continue;
+				seenAliases.add(value);
+				aliases.push({
+					value,
+					confidence: this.normalizeConfidence(rec.confidence),
+				});
+			}
+		}
+
+		const properties: Array<{ key: string; value: unknown; confidence: ConfidenceLevel }> = [];
+		const seenProperties = new Set<string>();
+		if (Array.isArray(obj.properties)) {
+			for (const propItem of obj.properties) {
+				if (!propItem || typeof propItem !== "object" || Array.isArray(propItem)) continue;
+				const rec = propItem as Record<string, unknown>;
+				const key = (
+					typeof rec.key === "string" ? rec.key
+						: typeof rec.name === "string" ? rec.name
+						: ""
+				).trim();
+				if (!key || seenProperties.has(key) || this.isReservedFrontmatterKey(key)) continue;
+				const normalizedValue = this.normalizeSuggestionValue(rec.value);
+				if (normalizedValue === undefined) continue;
+				seenProperties.add(key);
+				properties.push({
+					key,
+					value: normalizedValue,
+					confidence: this.normalizeConfidence(rec.confidence),
+				});
+			}
+		} else if (obj.properties && typeof obj.properties === "object" && !Array.isArray(obj.properties)) {
+			for (const [rawKey, rawValue] of Object.entries(obj.properties as Record<string, unknown>)) {
+				const key = rawKey.trim();
+				if (!key || seenProperties.has(key) || this.isReservedFrontmatterKey(key)) continue;
+				const normalizedValue = this.normalizeSuggestionValue(rawValue);
+				if (normalizedValue === undefined) continue;
+				seenProperties.add(key);
+				properties.push({
+					key,
+					value: normalizedValue,
+					confidence: "medium",
+				});
+			}
+		}
+
+		return { tags, aliases, properties };
+	}
+
+	private normalizeConfidence(input: unknown): ConfidenceLevel {
+		if (typeof input !== "string") return "medium";
+		const normalized = input.trim().toLowerCase();
+		if (normalized === "high" || normalized === "medium" || normalized === "low") {
+			return normalized;
+		}
+		return "medium";
+	}
+
+	private normalizeTag(tag: string): string {
+		return tag.trim().replace(/^#/, "").toLowerCase();
+	}
+
+	private isReservedFrontmatterKey(key: string): boolean {
+		const normalized = key.trim().toLowerCase();
+		if (normalized.startsWith("honcho_")) return true;
+		return [
+			// Honcho tracking keys
+			"synced", "session", "hash", "feedback",
+			"honcho_synced", "honcho_session_id", "honcho_content_hash", "honcho_feedback",
+			// Structural/meta keys that are usually not useful as user-authored frontmatter
+			"title", "peer", "generated", "modified", "graph_position", "backlink_count",
+			"file_path", "file_name", "source", "source_type", "ingested_at",
+			"created", "created_at", "updated_at", "last_modified", "last_synced",
+			"workspace", "workspace_id", "session_id", "observer_id", "observed_id",
+			"message_type", "turn_id", "tags", "aliases",
+		].includes(normalized);
+	}
+
+	private normalizeSuggestionValue(value: unknown): unknown {
+		if (typeof value === "string") {
+			const text = value.trim();
+			return text.length > 0 ? text : undefined;
+		}
+		if (typeof value === "number" || typeof value === "boolean") {
+			return value;
+		}
+		if (Array.isArray(value)) {
+			const arr = value
+				.map((v) => this.normalizeSuggestionValue(v))
+				.filter((v) => v !== undefined);
+			return arr.length > 0 ? arr : undefined;
+		}
+		return undefined;
+	}
+
+	private async applyFrontmatterSuggestion(file: TFile, suggestion: FrontmatterSuggestion): Promise<void> {
+		if (this.frontmatterApplyingPath) return;
+		this.frontmatterApplyingPath = file.path;
+		await this.refreshFrontmatterSuggestions();
+
+		let tagsAdded = 0;
+		let aliasesAdded = 0;
+		let propertiesAdded = 0;
+
+		try {
+			await this.app.fileManager.processFrontMatter(file, (fm) => {
+				if (suggestion.tags.length > 0) {
+					const currentTags = normalizeFrontmatterTags(fm.tags)
+						.map((t) => this.normalizeTag(t));
+					const merged = new Set(currentTags);
+					for (const tag of suggestion.tags) {
+						if (!merged.has(tag.value)) {
+							merged.add(tag.value);
+							tagsAdded++;
+							this.markFrontmatterApplied(file.path, "tag", tag.value);
+						}
+					}
+					if (merged.size > 0) fm.tags = Array.from(merged);
+				}
+
+				if (suggestion.aliases.length > 0) {
+					const rawAliases = fm.aliases;
+					const currentAliases = Array.isArray(rawAliases)
+						? rawAliases.map(String)
+						: typeof rawAliases === "string"
+							? [rawAliases]
+							: [];
+					const mergedAliases = new Set(currentAliases);
+					for (const alias of suggestion.aliases) {
+						if (!mergedAliases.has(alias.value)) {
+							mergedAliases.add(alias.value);
+							aliasesAdded++;
+							this.markFrontmatterApplied(file.path, "alias", alias.value);
+						}
+					}
+					if (mergedAliases.size > 0) fm.aliases = Array.from(mergedAliases);
+				}
+
+				for (const prop of suggestion.properties) {
+					if (this.isReservedFrontmatterKey(prop.key)) continue;
+					const existing = fm[prop.key];
+					const empty = existing === undefined || existing === null || existing === "";
+					if (empty) {
+						fm[prop.key] = prop.value;
+						propertiesAdded++;
+						this.markFrontmatterApplied(file.path, "property", prop.key);
+					}
+				}
+			});
+
+			new Notice(
+				`Applied suggestions to ${file.basename}: ${tagsAdded} tags, ${aliasesAdded} aliases, ${propertiesAdded} properties`
+			);
+		} finally {
+			this.frontmatterApplyingPath = null;
+			await this.refreshFrontmatterSuggestions();
+		}
+	}
+
+	private async applySingleTag(file: TFile, tag: string): Promise<void> {
+		if (this.frontmatterApplyingPath) return;
+		this.frontmatterApplyingPath = file.path;
+		await this.refreshFrontmatterSuggestions();
+		try {
+			let added = false;
+			await this.app.fileManager.processFrontMatter(file, (fm) => {
+				const currentTags = normalizeFrontmatterTags(fm.tags).map((t) => this.normalizeTag(t));
+				const merged = new Set(currentTags);
+				if (!merged.has(tag)) {
+					merged.add(tag);
+					fm.tags = Array.from(merged);
+					added = true;
+					this.markFrontmatterApplied(file.path, "tag", tag);
+				}
+			});
+			new Notice(added ? `Added tag #${tag}` : `Tag #${tag} already exists`);
+		} finally {
+			this.frontmatterApplyingPath = null;
+			await this.refreshFrontmatterSuggestions();
+		}
+	}
+
+	private async applySingleAlias(file: TFile, alias: string): Promise<void> {
+		if (this.frontmatterApplyingPath) return;
+		this.frontmatterApplyingPath = file.path;
+		await this.refreshFrontmatterSuggestions();
+		try {
+			let added = false;
+			await this.app.fileManager.processFrontMatter(file, (fm) => {
+				const rawAliases = fm.aliases;
+				const currentAliases = Array.isArray(rawAliases)
+					? rawAliases.map(String)
+					: typeof rawAliases === "string"
+						? [rawAliases]
+						: [];
+				const merged = new Set(currentAliases);
+				if (!merged.has(alias)) {
+					merged.add(alias);
+					fm.aliases = Array.from(merged);
+					added = true;
+					this.markFrontmatterApplied(file.path, "alias", alias);
+				}
+			});
+			new Notice(added ? `Added alias "${alias}"` : `Alias "${alias}" already exists`);
+		} finally {
+			this.frontmatterApplyingPath = null;
+			await this.refreshFrontmatterSuggestions();
+		}
+	}
+
+	private async applySingleProperty(file: TFile, key: string, value: unknown): Promise<void> {
+		if (this.frontmatterApplyingPath) return;
+		this.frontmatterApplyingPath = file.path;
+		await this.refreshFrontmatterSuggestions();
+		try {
+			let added = false;
+			await this.app.fileManager.processFrontMatter(file, (fm) => {
+				const existing = fm[key];
+				const empty = existing === undefined || existing === null || existing === "";
+				if (empty) {
+					fm[key] = value;
+					added = true;
+					this.markFrontmatterApplied(file.path, "property", key);
+				}
+			});
+			new Notice(added ? `Added frontmatter property "${key}"` : `Property "${key}" already set`);
+		} finally {
+			this.frontmatterApplyingPath = null;
+			await this.refreshFrontmatterSuggestions();
+		}
+	}
+
+	private getExistingFrontmatterState(file: TFile): {
+		tags: Set<string>;
+		aliases: Set<string>;
+		properties: Set<string>;
+	} {
+		const cache = this.app.metadataCache.getFileCache(file);
+		const frontmatter = cache?.frontmatter;
+
+		const tags = new Set<string>();
+		for (const tag of normalizeFrontmatterTags(frontmatter?.tags)) {
+			tags.add(this.normalizeTag(tag));
+		}
+
+		const aliases = new Set<string>();
+		const rawAliases = frontmatter?.aliases;
+		if (Array.isArray(rawAliases)) {
+			for (const alias of rawAliases) aliases.add(String(alias).trim());
+		} else if (typeof rawAliases === "string") {
+			aliases.add(rawAliases.trim());
+		}
+
+		const properties = new Set<string>();
+		if (frontmatter) {
+			for (const key of Object.keys(frontmatter)) {
+				if (key === "tags" || key === "aliases" || this.isReservedFrontmatterKey(key)) continue;
+				properties.add(key);
+			}
+		}
+
+		const local = this.frontmatterAppliedState.get(file.path);
+		if (local) {
+			for (const tag of local.tags) tags.add(tag);
+			for (const alias of local.aliases) aliases.add(alias);
+			for (const prop of local.properties) properties.add(prop);
+		}
+
+		return { tags, aliases, properties };
+	}
+
+	private markFrontmatterApplied(path: string, kind: "tag" | "alias" | "property", value: string): void {
+		if (!this.frontmatterAppliedState.has(path)) {
+			this.frontmatterAppliedState.set(path, {
+				tags: new Set(),
+				aliases: new Set(),
+				properties: new Set(),
+			});
+		}
+		const state = this.frontmatterAppliedState.get(path)!;
+		if (kind === "tag") state.tags.add(value);
+		if (kind === "alias") state.aliases.add(value);
+		if (kind === "property") state.properties.add(value);
+	}
+
+	private async maybeAutoSuggestFrontmatter(file: TFile): Promise<void> {
+		if (this.frontmatterLoadingPath || this.frontmatterApplyingPath) return;
+		if (this.frontmatterDismissedPaths.has(file.path)) return;
+		const cache = this.app.metadataCache.getFileCache(file);
+		if (cache?.frontmatter?.honcho_generated) return;
+		if (this.frontmatterAutoSuggestedPaths.has(file.path)) return;
+		const cached = this.frontmatterCache.get(file.path);
+		const isFresh = !!cached && Date.now() - cached.ts < HonchoSidebarView.FRONTMATTER_CACHE_TTL;
+		if (isFresh) return;
+		this.frontmatterAutoSuggestedPaths.add(file.path);
+		await this.generateFrontmatterSuggestion(file);
+	}
+
+	private stringifySuggestionValue(value: unknown): string {
+		if (Array.isArray(value)) {
+			return value.map((v) => String(v)).join(", ");
+		}
+		return String(value);
 	}
 
 	// ---------------------------------------------------------------------------
@@ -377,21 +1195,42 @@ export class HonchoSidebarView extends ItemView {
 
 		const list = details.createEl("ul", { cls: "honcho-card-list" });
 		for (const item of visible) {
-			list.createEl("li", { text: item });
+			this.renderCardItem(list, group, item);
 		}
 
 		if (hidden.length > 0) {
 			const expandBtn = details.createEl("button", {
-				text: `+${hidden.length} more`,
+				text: `Show ${hidden.length} more`,
 				cls: "honcho-expand-btn",
 			});
 			expandBtn.addEventListener("click", () => {
 				for (const item of hidden) {
-					list.createEl("li", { text: item });
+					this.renderCardItem(list, group, item);
 				}
 				expandBtn.remove();
 			});
 		}
+	}
+
+	private renderCardItem(list: HTMLElement, group: CardGroup, item: string): void {
+		const li = list.createEl("li");
+
+		// Identity/general card rows often arrive as "Label: Value".
+		// Split those into key/value spans so they scan quickly.
+		if (group.key !== "general") {
+			li.setText(item);
+			return;
+		}
+
+		const kvMatch = /^([^:]{1,40}):\s*(.+)$/.exec(item);
+		if (!kvMatch) {
+			li.setText(item);
+			return;
+		}
+
+		li.addClass("honcho-card-kv-item");
+		li.createSpan({ cls: "honcho-card-kv-key", text: kvMatch[1].trim() });
+		li.createSpan({ cls: "honcho-card-kv-value", text: kvMatch[2].trim() });
 	}
 
 	// ---------------------------------------------------------------------------
@@ -399,10 +1238,12 @@ export class HonchoSidebarView extends ItemView {
 	// ---------------------------------------------------------------------------
 
 	private postProcessRepresentation(el: HTMLElement): void {
-		const tsRegex = /^\[(\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)\]\s*/;
+		const bareTsRegex = /^(\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)$/;
+		let pendingTimestamp: string | null = null;
 
 		for (const p of Array.from(el.querySelectorAll("p"))) {
 			const text = p.textContent?.trim() ?? "";
+			if (!text) continue;
 
 			// Hide "Premises:" labels and the list that follows -- these are
 			// internal reasoning scaffolding, not useful to the user.
@@ -413,15 +1254,73 @@ export class HonchoSidebarView extends ItemView {
 				continue;
 			}
 
-			// Transform timestamped entries into structured rows
-			const match = tsRegex.exec(text);
-			if (!match) continue;
-			const timestamp = match[1];
-			const bodyText = text.slice(match[0].length).trim();
-			p.addClass("honcho-rep-entry");
-			p.empty();
-			p.createSpan({ cls: "honcho-rep-ts", text: timestamp });
-			p.createSpan({ cls: "honcho-rep-body", text: bodyText });
+			// Some model responses emit bare timestamp lines followed by text.
+			// Cache the timestamp and apply it to the next body paragraph.
+			const bareTsMatch = bareTsRegex.exec(text);
+			if (bareTsMatch) {
+				pendingTimestamp = bareTsMatch[1];
+				p.addClass("honcho-rep-hidden");
+				continue;
+			}
+
+			const entries: RepresentationEntry[] = [];
+			const matches = Array.from(
+				text.matchAll(/\[(\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)\]\s*/g)
+			);
+
+			if (matches.length > 0) {
+				let cursor = 0;
+
+				for (let i = 0; i < matches.length; i++) {
+					const match = matches[i];
+					const ts = match[1];
+					const matchStart = match.index ?? 0;
+					const matchEnd = matchStart + match[0].length;
+					const nextStart = i + 1 < matches.length ? (matches[i + 1].index ?? text.length) : text.length;
+
+					// Preserve lead text before an inline timestamp as its own entry.
+					const leadText = text.slice(cursor, matchStart).trim();
+					if (leadText) {
+						entries.push({
+							ts: i === 0 ? pendingTimestamp : null,
+							body: leadText,
+						});
+						pendingTimestamp = null;
+					}
+
+					const bodyText = text.slice(matchEnd, nextStart).trim();
+					if (bodyText) {
+						entries.push({ ts, body: bodyText });
+					}
+
+					cursor = nextStart;
+				}
+
+				pendingTimestamp = null;
+			} else if (pendingTimestamp) {
+				entries.push({ ts: pendingTimestamp, body: text });
+				pendingTimestamp = null;
+			}
+
+			if (entries.length === 0) {
+				pendingTimestamp = null;
+				continue;
+			}
+
+			const list = document.createElement("div");
+			list.addClass("honcho-rep-entry-list");
+
+			for (const entry of entries) {
+				const row = list.createDiv({
+					cls: `honcho-rep-entry${entry.ts ? "" : " honcho-rep-entry-untimed"}`,
+				});
+				if (entry.ts) {
+					row.createSpan({ cls: "honcho-rep-ts", text: entry.ts });
+				}
+				row.createSpan({ cls: "honcho-rep-body", text: entry.body });
+			}
+
+			p.replaceWith(list);
 		}
 	}
 
@@ -433,6 +1332,10 @@ export class HonchoSidebarView extends ItemView {
 		const section = parent.createDiv({ cls: "honcho-section honcho-sidebar-chat-section" });
 		const header = section.createDiv({ cls: "honcho-section-header" });
 		header.createEl("h4", { text: "Chat" });
+		header.createEl("span", {
+			text: "Ask about your notes or identity.",
+			cls: "honcho-chat-header-hint",
+		});
 
 		if (this.chatMessages.length > 0) {
 			const clearBtn = header.createEl("button", {
@@ -474,14 +1377,8 @@ export class HonchoSidebarView extends ItemView {
 		const el = this.chatEl;
 		if (!el) return;
 		el.empty();
-
-		if (this.chatMessages.length === 0) {
-			el.createEl("p", {
-				text: "Ask about your notes or identity.",
-				cls: "honcho-sidebar-empty honcho-sidebar-chat-hint",
-			});
-			return;
-		}
+		el.toggleClass("honcho-chat-messages-hidden", this.chatMessages.length === 0);
+		if (this.chatMessages.length === 0) return;
 
 		for (const msg of this.chatMessages) {
 			const bubble = el.createDiv({
@@ -580,20 +1477,24 @@ export class HonchoSidebarView extends ItemView {
 		const section = parent.createDiv({ cls: "honcho-section honcho-sync-status-section" });
 		const header = section.createDiv({ cls: "honcho-section-header" });
 		header.createEl("h4", { text: "Sync Status" });
+		const headerActions = header.createDiv({ cls: "honcho-inline-actions" });
+		const reingestBtn = headerActions.createEl("button", {
+			text: "Re-ingest current",
+			cls: "honcho-btn-small",
+		});
+		reingestBtn.disabled = !this.activeFile;
+		reingestBtn.addEventListener("click", () => {
+			this.app.commands.executeCommandById("honcho:reingest-note");
+		});
 		const statusEl = section.createDiv({ cls: "honcho-sync-status-body" });
 
 		try {
-			// Use cached count if fresh enough
-			let count: number;
-			if (this.staleCountCache && Date.now() - this.staleCountCache.ts < HonchoSidebarView.STALE_CACHE_TTL) {
-				count = this.staleCountCache.count;
-			} else {
-				statusEl.createSpan({ text: "Checking\u2026", cls: "honcho-loading" });
-				const stale = await findStaleNotes(this.app);
-				count = stale.length;
-				this.staleCountCache = { count, ts: Date.now() };
-				statusEl.empty();
-			}
+			// Always compute fresh status to avoid stale-count mismatch.
+			statusEl.createSpan({ text: "Checking\u2026", cls: "honcho-loading" });
+			const stale = await findStaleNotes(this.app);
+			const count = stale.length;
+			this.staleCountCache = { count, ts: Date.now() };
+			statusEl.empty();
 
 			if (count === 0) {
 				statusEl.createSpan({ text: "All notes up to date", cls: "honcho-text-muted" });

@@ -55,6 +55,18 @@ export default class HonchoPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: "reingest-note",
+			name: "Re-ingest current note",
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file) return false;
+				if (checking) return true;
+				this.runIngest(file, false, true);
+				return true;
+			},
+		});
+
+		this.addCommand({
 			id: "ingest-linked",
 			name: "Ingest current note + linked notes",
 			checkCallback: (checking) => {
@@ -173,6 +185,11 @@ export default class HonchoPlugin extends Plugin {
 						item.setTitle("Ingest into Honcho")
 							.setIcon("upload")
 							.onClick(() => this.runIngest(file));
+					});
+					menu.addItem((item) => {
+						item.setTitle("Re-ingest into Honcho")
+							.setIcon("rotate-cw")
+							.onClick(() => this.runIngest(file, false, true));
 					});
 					menu.addItem((item) => {
 						item.setTitle("Ingest + linked notes")
@@ -456,20 +473,27 @@ export default class HonchoPlugin extends Plugin {
 	// Ingest
 	// -----------------------------------------------------------------------
 
-	private async runIngest(file: TFile, silent = false): Promise<void> {
+	private async runIngest(file: TFile, silent = false, force = false): Promise<void> {
 		this.ingestingPaths.add(file.path);
 		try {
 			const { client, workspaceId, peerId } = await this.ensureInitialized();
 			const ctx = createIngestContext(
 				this.app, client, workspaceId, peerId, this.settings.trackFrontmatter
 			);
-			const result = await ingestNote(ctx, file);
+			const result = await ingestNote(ctx, file, force ? { force: true } : undefined);
 			if (!silent) {
 				if (result.skipped) {
-					new Notice(`${file.basename}: skipped (${result.reason ?? "unchanged"})`);
+					if (result.reason === "unchanged") {
+						new Notice(`${file.basename} is already up to date`);
+					} else if (result.reason === "empty") {
+						new Notice(`${file.basename} has no content to sync`);
+					} else if (result.reason === "in-progress") {
+						new Notice(`${file.basename} is already syncing`);
+					} else {
+						new Notice(`Could not sync ${file.basename}`);
+					}
 				} else {
-					const n = result.messages.length;
-					new Notice(`Ingested ${file.basename}: ${n} message${n !== 1 ? "s" : ""}`);
+					new Notice(`${force ? "Re-synced" : "Synced"} ${file.basename}`);
 				}
 			}
 		} catch (err) {

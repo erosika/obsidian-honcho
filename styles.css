@@ -10,11 +10,71 @@
    - Chat: editorial block layout, labeled turns, no rounded bubbles
    ========================================================================= */
 
+/* -- Settings ----------------------------------------------------------- */
+
+.honcho-settings-search {
+	position: sticky;
+	top: 0;
+	z-index: 1;
+	padding: var(--size-4-2) 0 var(--size-4-3);
+	background: var(--background-primary);
+}
+
+.honcho-settings-search-input {
+	width: 100%;
+	padding: var(--size-4-2);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 0;
+	background: var(--background-secondary);
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+	font-family: var(--font-monospace);
+}
+
+.honcho-settings-search-input::placeholder {
+	color: var(--text-faint);
+}
+
+.honcho-settings-search-input:focus {
+	border-color: var(--interactive-accent);
+	outline: none;
+}
+
+.honcho-settings-save {
+	position: sticky;
+	bottom: 0;
+	padding: var(--size-4-3) 0;
+	background: var(--background-primary);
+	border-top: 1px solid var(--background-modifier-border);
+	margin-top: var(--size-4-4);
+}
+
+.honcho-settings-save-btn {
+	width: 100%;
+	padding: var(--size-4-2) var(--size-4-4);
+	border-radius: 0;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-small);
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	cursor: pointer;
+}
+
+.honcho-settings-save-btn:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
+.honcho-save-done {
+	color: var(--text-success);
+}
+
 /* -- Sidebar ------------------------------------------------------------ */
 
 .honcho-sidebar {
 	padding: var(--size-4-3);
 	overflow-y: auto;
+	line-height: 1.45;
 }
 
 .honcho-sidebar-header {
@@ -71,10 +131,30 @@
 	color: var(--text-normal);
 }
 
+.honcho-sidebar-body {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-3);
+}
+
 /* -- Sections ----------------------------------------------------------- */
 
 .honcho-section {
 	margin-bottom: var(--size-4-4);
+}
+
+.honcho-sidebar-body > .honcho-section {
+	margin-bottom: 0;
+}
+
+.honcho-sidebar .honcho-sync-status-section,
+.honcho-sidebar .honcho-frontmatter-section,
+.honcho-sidebar .honcho-sidebar-chat-section,
+.honcho-sidebar .honcho-card-group,
+.honcho-sidebar .honcho-rep-section {
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	padding: var(--size-4-2) var(--size-4-3);
 }
 
 .honcho-section-header {
@@ -82,6 +162,27 @@
 	align-items: center;
 	justify-content: space-between;
 	margin-bottom: var(--size-4-2);
+}
+
+.honcho-inline-actions {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-1);
+}
+
+.honcho-icon-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 24px;
+	height: 24px;
+	padding: 0;
+	border-radius: 0;
+	color: var(--text-faint);
+}
+
+.honcho-icon-btn:hover {
+	color: var(--text-normal);
 }
 
 .honcho-section h4,
@@ -95,46 +196,73 @@
 	font-weight: var(--font-semibold);
 }
 
+.honcho-section-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-1);
+	padding: 0;
+	border: none;
+	background: none;
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	font-family: var(--font-monospace);
+	text-transform: uppercase;
+	letter-spacing: 0.1em;
+	font-weight: var(--font-semibold);
+	cursor: pointer;
+}
+
+.honcho-section-toggle::before {
+	content: "\25B8";
+	font-size: 10px;
+	color: var(--text-faint);
+	transition: transform 0.15s ease;
+}
+
+.honcho-section-toggle.is-expanded::before {
+	transform: rotate(90deg);
+}
+
+.honcho-section-toggle:hover {
+	color: var(--text-normal);
+}
+
 /* -- Card groups -------------------------------------------------------- */
 
 .honcho-card-group {
-	padding-left: 0;
+	padding: var(--size-4-2) var(--size-4-3);
 }
 
 .honcho-card-group + .honcho-card-group {
-	margin-top: var(--size-4-2);
+	margin-top: 0;
 }
 
 /* Group border accents */
 .honcho-group-general {
-	border-left: 2px solid var(--interactive-accent);
-	padding-left: var(--size-4-3);
+	border-left: 3px solid var(--interactive-accent);
 }
 
 .honcho-group-pattern {
-	border-left: 2px solid var(--text-faint);
-	padding-left: var(--size-4-3);
+	border-left: 3px solid var(--text-faint);
 }
 
 .honcho-group-trait {
-	border-left: 2px solid var(--text-success);
-	padding-left: var(--size-4-3);
+	border-left: 3px solid var(--text-success);
 }
 
 .honcho-group-preference {
-	border-left: 2px solid var(--text-accent);
-	padding-left: var(--size-4-3);
+	border-left: 3px solid var(--text-accent);
 }
 
 /* Collapsible summary */
 .honcho-group-summary {
 	display: flex;
 	align-items: center;
-	gap: var(--size-4-2);
+	gap: var(--size-4-1);
 	cursor: pointer;
 	list-style: none;
 	user-select: none;
-	padding: var(--size-2-2) 0;
+	padding: var(--size-2-1) 0;
 }
 
 .honcho-group-summary::-webkit-details-marker {
@@ -155,7 +283,7 @@ details[open] > .honcho-group-summary::before {
 
 .honcho-group-summary h4 {
 	margin: 0;
-	color: var(--text-faint);
+	color: var(--text-muted);
 	font-size: var(--font-ui-smaller);
 	font-family: var(--font-monospace);
 	text-transform: uppercase;
@@ -163,11 +291,18 @@ details[open] > .honcho-group-summary::before {
 	font-weight: var(--font-semibold);
 }
 
+.honcho-group-actions {
+	margin-left: auto;
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-1);
+}
+
 .honcho-group-count {
 	font-size: var(--font-ui-smaller);
 	font-family: var(--font-monospace);
 	color: var(--text-faint);
-	background: var(--background-secondary);
+	background: var(--background-primary);
 	padding: 1px 5px;
 	border: 1px solid var(--background-modifier-border);
 	line-height: 1.6;
@@ -175,16 +310,19 @@ details[open] > .honcho-group-summary::before {
 
 /* Card list items */
 .honcho-card-list {
-	padding-left: var(--size-4-3);
-	margin: var(--size-4-1) 0 0 0;
+	padding-left: 0;
+	margin: var(--size-4-2) 0 0;
 	list-style: none;
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-1);
 }
 
 .honcho-card-list li {
-	margin-bottom: var(--size-4-1);
+	margin: 0;
 	color: var(--text-muted);
 	font-size: var(--font-ui-small);
-	line-height: 1.5;
+	line-height: 1.55;
 	position: relative;
 	padding-left: var(--size-4-2);
 }
@@ -201,10 +339,35 @@ details[open] > .honcho-group-summary::before {
 	color: var(--text-normal);
 }
 
+.honcho-card-kv-item {
+	display: grid;
+	grid-template-columns: minmax(90px, max-content) minmax(0, 1fr);
+	column-gap: var(--size-4-2);
+	row-gap: 2px;
+	padding-left: 0 !important;
+}
+
+.honcho-card-kv-item::before {
+	display: none;
+}
+
+.honcho-card-kv-key {
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--text-faint);
+}
+
+.honcho-card-kv-value {
+	color: var(--text-normal);
+}
+
 /* -- Representation ----------------------------------------------------- */
 
 .honcho-representation {
 	border: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
 	font-size: var(--font-ui-small);
 	line-height: 1.5;
 	max-height: 340px;
@@ -239,11 +402,16 @@ details[open] > .honcho-group-summary::before {
 /* Post-processed timestamp entry */
 .honcho-rep-entry {
 	display: flex;
-	flex-direction: column;
-	gap: 3px;
+	flex-direction: row;
+	align-items: flex-start;
+	gap: var(--size-4-2);
 	padding: var(--size-4-2) var(--size-4-3);
 	border-bottom: 1px solid var(--background-modifier-border);
 	margin: 0 !important;
+}
+
+.honcho-rep-entry-untimed {
+	padding-left: var(--size-4-3);
 }
 
 .honcho-rep-entry:last-of-type {
@@ -254,12 +422,17 @@ details[open] > .honcho-group-summary::before {
 	font-family: var(--font-monospace);
 	font-size: 10px;
 	color: var(--text-faint);
-	line-height: 1;
+	line-height: 1.2;
+	flex-shrink: 0;
+	white-space: nowrap;
+	min-width: 125px;
+	padding-top: 2px;
 }
 
 .honcho-rep-body {
 	color: var(--text-normal);
-	line-height: 1.45;
+	line-height: 1.5;
+	white-space: pre-wrap;
 }
 
 /* Unprocessed paragraphs (no timestamp match) */
@@ -324,6 +497,93 @@ details[open] > .honcho-group-summary::before {
 	border-bottom: none;
 }
 
+/* -- Suggested frontmatter ---------------------------------------------- */
+
+.honcho-frontmatter-note {
+	margin: 0 0 var(--size-4-2);
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	font-family: var(--font-monospace);
+}
+
+.honcho-frontmatter-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-1);
+}
+
+.honcho-frontmatter-row {
+	display: grid;
+	grid-template-columns: minmax(80px, max-content) minmax(0, 1fr) auto;
+	column-gap: var(--size-4-2);
+	align-items: center;
+}
+
+.honcho-frontmatter-key {
+	color: var(--text-faint);
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+}
+
+.honcho-frontmatter-value {
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+	line-height: 1.5;
+	overflow-wrap: anywhere;
+}
+
+.honcho-identity-editor-input {
+	width: 100%;
+	min-height: 140px;
+	padding: var(--size-4-2);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 0;
+	background: var(--background-primary);
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+	font-family: var(--font-monospace);
+	line-height: 1.45;
+	resize: vertical;
+}
+
+.honcho-identity-editor-input:focus {
+	border-color: var(--interactive-accent);
+	outline: none;
+}
+
+.honcho-frontmatter-value-wrap {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-1);
+	min-width: 0;
+}
+
+.honcho-confidence {
+	font-size: 10px;
+	font-family: var(--font-monospace);
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	padding: 1px 5px;
+	border: 1px solid var(--background-modifier-border);
+	color: var(--text-faint);
+}
+
+.honcho-confidence-high {
+	color: var(--text-success);
+	border-color: var(--text-success);
+}
+
+.honcho-confidence-medium {
+	color: var(--text-accent);
+	border-color: var(--text-accent);
+}
+
+.honcho-confidence-low {
+	color: var(--text-muted);
+}
+
 /* -- Expand button (show N more items) ---------------------------------- */
 
 .honcho-expand-btn {
@@ -346,8 +606,15 @@ details[open] > .honcho-group-summary::before {
 /* -- Sidebar chat ------------------------------------------------------- */
 
 .honcho-sidebar-chat-section {
-	border-top: 1px solid var(--background-modifier-border);
-	padding-top: var(--size-4-4);
+	border-top: none;
+	padding-top: var(--size-4-2);
+}
+
+.honcho-chat-header-hint {
+	margin-left: auto;
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	font-family: var(--font-monospace);
 }
 
 .honcho-sidebar-chat-messages {
@@ -355,6 +622,15 @@ details[open] > .honcho-group-summary::before {
 	flex-direction: column;
 	gap: var(--size-4-2);
 	margin-bottom: var(--size-4-2);
+	max-height: 260px;
+	overflow-y: auto;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	padding: var(--size-4-2);
+}
+
+.honcho-sidebar-chat-messages.honcho-chat-messages-hidden {
+	display: none;
 }
 
 .honcho-sidebar-chat-hint {
@@ -362,9 +638,10 @@ details[open] > .honcho-group-summary::before {
 }
 
 .honcho-sidebar-chat-input-area {
-	display: flex;
-	flex-direction: column;
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
 	gap: var(--size-4-1);
+	align-items: end;
 }
 
 .honcho-sidebar-chat-input {
@@ -378,6 +655,7 @@ details[open] > .honcho-group-summary::before {
 	font-family: var(--font-monospace);
 	resize: vertical;
 	box-sizing: border-box;
+	min-height: 56px;
 }
 
 .honcho-sidebar-chat-input:focus {
@@ -386,14 +664,15 @@ details[open] > .honcho-group-summary::before {
 }
 
 .honcho-chat-send-btn {
-	align-self: flex-end;
+	align-self: end;
+	margin-bottom: 1px;
 }
 
 /* -- Sync status -------------------------------------------------------- */
 
 .honcho-sync-status-section {
-	padding-bottom: var(--size-4-3);
-	border-bottom: 1px solid var(--background-modifier-border);
+	padding-bottom: var(--size-4-2);
+	border-bottom: none;
 }
 
 .honcho-sync-status-body {
