@@ -111,6 +111,7 @@ export class HonchoSidebarView extends ItemView {
 	private frontmatterAutoSuggestedPaths: Set<string> = new Set();
 	private frontmatterDismissedPaths: Set<string> = new Set();
 	private frontmatterCollapsed = false;
+	private frontmatterSelectionState: Map<string, Map<string, boolean>> = new Map();
 	private frontmatterAppliedState: Map<
 		string,
 		{ tags: Set<string>; aliases: Set<string>; properties: Set<string> }
@@ -275,6 +276,7 @@ export class HonchoSidebarView extends ItemView {
 			this.frontmatterCache.clear();
 			this.frontmatterAutoSuggestedPaths.clear();
 			this.frontmatterDismissedPaths.clear();
+			this.frontmatterSelectionState.clear();
 			this.render();
 		});
 
@@ -322,7 +324,7 @@ export class HonchoSidebarView extends ItemView {
 			const { visibleItems, hiddenItems } = this.splitPeerCardItems(this.peerCardItems);
 			this.peerCardHiddenItems = hiddenItems;
 			if (!this.peerCardEditMode) {
-				this.peerCardDraft = visibleItems.join("\n");
+				this.peerCardDraft = this.formatPeerCardDraft(visibleItems);
 			}
 
 			body.empty();
@@ -371,7 +373,7 @@ export class HonchoSidebarView extends ItemView {
 				evt.preventDefault();
 				evt.stopPropagation();
 				this.peerCardEditMode = true;
-				this.peerCardDraft = items.join("\n");
+				this.peerCardDraft = this.formatPeerCardDraft(items);
 				void this.render();
 			});
 		} else {
@@ -403,7 +405,7 @@ export class HonchoSidebarView extends ItemView {
 				cls: "honcho-identity-editor-input",
 				attr: {
 					rows: "8",
-					placeholder: "One peer card item per line",
+					placeholder: "- One peer card item per line",
 				},
 			});
 			input.value = this.peerCardDraft;
@@ -454,10 +456,26 @@ export class HonchoSidebarView extends ItemView {
 		return { visibleItems, hiddenItems };
 	}
 
+	private formatPeerCardDraft(items: string[]): string {
+		return items.map((item) => `- ${item}`).join("\n");
+	}
+
+	private parsePeerCardDraft(draft: string): string[] {
+		return Array.from(
+			new Set(
+				draft
+					.split("\n")
+					.map((line) => line.trim())
+					.map((line) => line.replace(/^[-*+]\s+/, "").trim())
+					.filter((line) => line.length > 0)
+			)
+		);
+	}
+
 	private cancelIdentityEdits(): void {
 		this.peerCardEditMode = false;
 		const { visibleItems } = this.splitPeerCardItems(this.peerCardItems);
-		this.peerCardDraft = visibleItems.join("\n");
+		this.peerCardDraft = this.formatPeerCardDraft(visibleItems);
 		void this.render();
 	}
 
@@ -469,14 +487,7 @@ export class HonchoSidebarView extends ItemView {
 		this.peerCardSaving = true;
 		await this.render();
 		try {
-			const editedItems = Array.from(
-				new Set(
-					this.peerCardDraft
-						.split("\n")
-						.map((line) => line.trim())
-						.filter((line) => line.length > 0)
-				)
-			);
+			const editedItems = this.parsePeerCardDraft(this.peerCardDraft);
 			const nextCard = [...this.peerCardHiddenItems, ...editedItems];
 			await client.setPeerCard(
 				this.plugin.getWorkspaceId(),
@@ -486,7 +497,7 @@ export class HonchoSidebarView extends ItemView {
 
 			this.peerCardItems = nextCard;
 			this.peerCardEditMode = false;
-			this.peerCardDraft = editedItems.join("\n");
+			this.peerCardDraft = this.formatPeerCardDraft(editedItems);
 			new Notice(`Saved identity peer card (${editedItems.length} items)`);
 		} catch (err) {
 			new Notice(`Failed to save peer card: ${err instanceof Error ? err.message : String(err)}`);
@@ -508,17 +519,36 @@ export class HonchoSidebarView extends ItemView {
 		section.empty();
 
 		const header = section.createDiv({ cls: "honcho-section-header" });
-		const titleBtn = header.createEl("button", {
-			text: "Suggested Frontmatter",
-			cls: "honcho-section-toggle",
-		});
-		titleBtn.addClass(this.frontmatterCollapsed ? "is-collapsed" : "is-expanded");
-		titleBtn.addEventListener("click", () => {
+		const titleToggle = header.createDiv({ cls: "honcho-section-toggle" });
+		titleToggle.setAttribute("role", "button");
+		titleToggle.setAttribute("tabindex", "0");
+		titleToggle.createSpan({ text: "Suggested Frontmatter" });
+		titleToggle.addClass(this.frontmatterCollapsed ? "is-collapsed" : "is-expanded");
+		const toggle = () => {
 			this.frontmatterCollapsed = !this.frontmatterCollapsed;
 			void this.refreshFrontmatterSuggestions();
+		};
+		titleToggle.addEventListener("click", toggle);
+		titleToggle.addEventListener("keydown", (evt) => {
+			if (evt.key !== "Enter" && evt.key !== " ") return;
+			evt.preventDefault();
+			toggle();
 		});
-		const actions = header.createDiv({ cls: "honcho-inline-actions" });
-		const infoBtn = actions.createEl("button", {
+
+		const file = this.activeFile;
+		const cached = file ? this.frontmatterCache.get(file.path) : null;
+		const hasCachedSuggestion = !!cached;
+		const headerActions = header.createDiv({ cls: "honcho-inline-actions" });
+		const refreshBtn = headerActions.createEl("button", {
+			cls: "honcho-icon-btn clickable-icon",
+			attr: {
+				"aria-label": file && hasCachedSuggestion ? "Refresh suggestions" : "Suggest frontmatter",
+				title: file && hasCachedSuggestion ? "Refresh suggestions" : "Generate suggestions",
+			},
+		});
+		refreshBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10"></path><path d="M20.49 15a9 9 0 0 1-14.13 3.36L1 14"></path></svg>`;
+
+		const infoBtn = headerActions.createEl("button", {
 			cls: "honcho-icon-btn clickable-icon",
 			attr: {
 				"aria-label": "How suggestions work",
@@ -526,28 +556,29 @@ export class HonchoSidebarView extends ItemView {
 			},
 		});
 		infoBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>`;
+		infoBtn.addEventListener("click", () => this.showFrontmatterInfo());
 
-		const settingsBtn = actions.createEl("button", {
+		const settingsBtn = headerActions.createEl("button", {
 			cls: "honcho-icon-btn clickable-icon",
 			attr: { "aria-label": "Frontmatter settings", title: "Open Honcho settings" },
 		});
 		settingsBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1.2 1.83l-.16.07a2 2 0 0 1-2.16-.35l-.13-.13a2 2 0 0 0-2.83 0l-.31.31a2 2 0 0 0 0 2.83l.13.13a2 2 0 0 1 .35 2.16l-.07.16A2 2 0 0 1 2 12.78V13.22a2 2 0 0 0 2 2h.18a2 2 0 0 1 1.83 1.2l.07.16a2 2 0 0 1-.35 2.16l-.13.13a2 2 0 0 0 0 2.83l.31.31a2 2 0 0 0 2.83 0l.13-.13a2 2 0 0 1 2.16-.35l.16.07a2 2 0 0 1 1.2 1.83V22a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1.2-1.83l.16-.07a2 2 0 0 1 2.16.35l.13.13a2 2 0 0 0 2.83 0l.31-.31a2 2 0 0 0 0-2.83l-.13-.13a2 2 0 0 1-.35-2.16l.07-.16A2 2 0 0 1 22 13.22v-.44a2 2 0 0 0-2-2h-.18a2 2 0 0 1-1.83-1.2l-.07-.16a2 2 0 0 1 .35-2.16l.13-.13a2 2 0 0 0 0-2.83l-.31-.31a2 2 0 0 0-2.83 0l-.13.13a2 2 0 0 1-2.16.35l-.16-.07a2 2 0 0 1-1.2-1.83V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>`;
 		settingsBtn.addEventListener("click", () => this.openFrontmatterSettings());
 
+		const fileCache = file ? this.app.metadataCache.getFileCache(file) : null;
+		const isHonchoGenerated = !!fileCache?.frontmatter?.honcho_generated;
+		refreshBtn.disabled = !file || this.frontmatterLoadingPath === file.path || isHonchoGenerated;
+		if (file && !isHonchoGenerated) {
+			refreshBtn.addEventListener("click", () => {
+				void this.generateFrontmatterSuggestion(file);
+			});
+		}
+
 		if (this.frontmatterCollapsed) return;
 
-		const file = this.activeFile;
-		const cached = file ? this.frontmatterCache.get(file.path) : null;
-		const hasCachedSuggestion = !!cached;
-		const suggestBtn = actions.createEl("button", {
-			text: file && this.frontmatterLoadingPath === file.path
-				? (hasCachedSuggestion ? "Refreshing..." : "Suggesting...")
-				: (hasCachedSuggestion ? "Refresh" : "Suggest"),
-			cls: "honcho-btn-small",
-		});
+		const controls = section.createDiv({ cls: "honcho-frontmatter-actions" });
 
 		if (!file) {
-			suggestBtn.disabled = true;
 			section.createEl("p", {
 				text: "Open a note to generate frontmatter suggestions.",
 				cls: "honcho-sidebar-empty",
@@ -555,10 +586,7 @@ export class HonchoSidebarView extends ItemView {
 			return;
 		}
 
-		const cache = this.app.metadataCache.getFileCache(file);
-		const isHonchoGenerated = !!cache?.frontmatter?.honcho_generated;
 		if (isHonchoGenerated) {
-			suggestBtn.disabled = true;
 			section.createEl("p", {
 				text: "Suggestions are hidden for Honcho-generated notes.",
 				cls: "honcho-sidebar-empty",
@@ -567,8 +595,8 @@ export class HonchoSidebarView extends ItemView {
 		}
 
 		if (this.frontmatterDismissedPaths.has(file.path)) {
-			suggestBtn.disabled = true;
-			const showBtn = actions.createEl("button", {
+			refreshBtn.disabled = true;
+			const showBtn = controls.createEl("button", {
 				text: "Show",
 				cls: "honcho-btn-small",
 			});
@@ -583,11 +611,7 @@ export class HonchoSidebarView extends ItemView {
 			return;
 		}
 
-		suggestBtn.disabled = this.frontmatterLoadingPath === file.path;
-		suggestBtn.addEventListener("click", () => {
-			void this.generateFrontmatterSuggestion(file);
-		});
-		const dismissBtn = actions.createEl("button", {
+		const dismissBtn = controls.createEl("button", {
 			text: "Dismiss",
 			cls: "honcho-btn-small",
 		});
@@ -629,13 +653,51 @@ export class HonchoSidebarView extends ItemView {
 			return;
 		}
 
-		const applyBtn = actions.createEl("button", {
-			text: "Apply missing",
+		const selectableIds = new Set<string>();
+		for (const tag of suggestion.tags) {
+			if (!existing.tags.has(tag.value)) selectableIds.add(`tag:${tag.value}`);
+		}
+		for (const alias of suggestion.aliases) {
+			if (!existing.aliases.has(alias.value)) selectableIds.add(`alias:${alias.value}`);
+		}
+		for (const prop of suggestion.properties) {
+			if (!existing.properties.has(prop.key)) selectableIds.add(`prop:${prop.key}`);
+		}
+		const selection = this.syncFrontmatterSelectionState(file.path, selectableIds);
+		const selectedCount = Array.from(selectableIds).reduce(
+			(count, id) => count + (selection.get(id) ? 1 : 0),
+			0
+		);
+
+		const selectAllBtn = controls.createEl("button", {
+			text: "Select all",
 			cls: "honcho-btn-small",
 		});
-		applyBtn.disabled = isApplying;
+		selectAllBtn.disabled = selectableIds.size === 0 || isApplying;
+		selectAllBtn.addEventListener("click", () => {
+			const state = this.getFrontmatterSelectionState(file.path);
+			for (const id of selectableIds) state.set(id, true);
+			void this.refreshFrontmatterSuggestions();
+		});
+
+		const clearBtn = controls.createEl("button", {
+			text: "Clear",
+			cls: "honcho-btn-small",
+		});
+		clearBtn.disabled = selectableIds.size === 0 || isApplying;
+		clearBtn.addEventListener("click", () => {
+			const state = this.getFrontmatterSelectionState(file.path);
+			for (const id of selectableIds) state.set(id, false);
+			void this.refreshFrontmatterSuggestions();
+		});
+
+		const applyBtn = controls.createEl("button", {
+			text: selectedCount > 0 ? `Apply selected (${selectedCount})` : "Apply selected",
+			cls: "honcho-btn-small mod-cta",
+		});
+		applyBtn.disabled = isApplying || selectedCount === 0;
 		applyBtn.addEventListener("click", () => {
-			void this.applyFrontmatterSuggestion(file, suggestion);
+			void this.applySelectedFrontmatterSuggestion(file, suggestion, selection);
 		});
 
 		const list = section.createDiv({ cls: "honcho-frontmatter-list" });
@@ -643,21 +705,31 @@ export class HonchoSidebarView extends ItemView {
 		if (suggestion.tags.length > 0) {
 			for (const tag of suggestion.tags) {
 				const row = list.createDiv({ cls: "honcho-frontmatter-row" });
+				const id = `tag:${tag.value}`;
+				const exists = existing.tags.has(tag.value);
+				const selected = selection.get(id) === true;
+
+				const check = row.createEl("input", {
+					cls: "honcho-fm-check",
+					attr: { type: "checkbox", "aria-label": `Select tag ${tag.value}` },
+				}) as HTMLInputElement;
+				check.checked = selected;
+				check.disabled = exists || isApplying;
+				check.addEventListener("change", () => {
+					this.getFrontmatterSelectionState(file.path).set(id, check.checked);
+					void this.refreshFrontmatterSuggestions();
+				});
+
 				row.createSpan({ cls: "honcho-frontmatter-key", text: "tag" });
 				const valueWrap = row.createDiv({ cls: "honcho-frontmatter-value-wrap" });
-				valueWrap.createSpan({ cls: "honcho-frontmatter-value", text: `#${tag.value}` });
 				valueWrap.createSpan({
-					cls: `honcho-confidence honcho-confidence-${tag.confidence}`,
-					text: tag.confidence,
+					cls: `honcho-frontmatter-value honcho-frontmatter-confidence-${tag.confidence}`,
+					text: `#${tag.value}`,
+					attr: { title: `Confidence: ${tag.confidence}` },
 				});
-				const exists = existing.tags.has(tag.value);
-				const applyOne = row.createEl("button", {
-					text: exists ? "Added" : "Apply",
-					cls: "honcho-btn-small",
-				});
-				applyOne.disabled = exists || isApplying;
-				applyOne.addEventListener("click", () => {
-					void this.applySingleTag(file, tag.value);
+				row.createSpan({
+					cls: "honcho-frontmatter-status",
+					text: exists ? "Added" : selected ? "Selected" : "Skipped",
 				});
 			}
 		}
@@ -665,24 +737,30 @@ export class HonchoSidebarView extends ItemView {
 		if (suggestion.aliases.length > 0) {
 			for (const alias of suggestion.aliases) {
 				const row = list.createDiv({ cls: "honcho-frontmatter-row" });
+				const id = `alias:${alias.value}`;
+				const exists = existing.aliases.has(alias.value);
+				const selected = selection.get(id) === true;
+				const check = row.createEl("input", {
+					cls: "honcho-fm-check",
+					attr: { type: "checkbox", "aria-label": `Select alias ${alias.value}` },
+				}) as HTMLInputElement;
+				check.checked = selected;
+				check.disabled = exists || isApplying;
+				check.addEventListener("change", () => {
+					this.getFrontmatterSelectionState(file.path).set(id, check.checked);
+					void this.refreshFrontmatterSuggestions();
+				});
+
 				row.createSpan({ cls: "honcho-frontmatter-key", text: "alias" });
 				const valueWrap = row.createDiv({ cls: "honcho-frontmatter-value-wrap" });
 				valueWrap.createSpan({
-					cls: "honcho-frontmatter-value",
+					cls: `honcho-frontmatter-value honcho-frontmatter-confidence-${alias.confidence}`,
 					text: alias.value,
+					attr: { title: `Confidence: ${alias.confidence}` },
 				});
-				valueWrap.createSpan({
-					cls: `honcho-confidence honcho-confidence-${alias.confidence}`,
-					text: alias.confidence,
-				});
-				const exists = existing.aliases.has(alias.value);
-				const applyOne = row.createEl("button", {
-					text: exists ? "Added" : "Apply",
-					cls: "honcho-btn-small",
-				});
-				applyOne.disabled = exists || isApplying;
-				applyOne.addEventListener("click", () => {
-					void this.applySingleAlias(file, alias.value);
+				row.createSpan({
+					cls: "honcho-frontmatter-status",
+					text: exists ? "Added" : selected ? "Selected" : "Skipped",
 				});
 			}
 		}
@@ -690,32 +768,140 @@ export class HonchoSidebarView extends ItemView {
 		if (suggestion.properties.length > 0) {
 			for (const prop of suggestion.properties) {
 				const row = list.createDiv({ cls: "honcho-frontmatter-row" });
+				const id = `prop:${prop.key}`;
+				const exists = existing.properties.has(prop.key);
+				const selected = selection.get(id) === true;
+				const check = row.createEl("input", {
+					cls: "honcho-fm-check",
+					attr: { type: "checkbox", "aria-label": `Select property ${prop.key}` },
+				}) as HTMLInputElement;
+				check.checked = selected;
+				check.disabled = exists || isApplying;
+				check.addEventListener("change", () => {
+					this.getFrontmatterSelectionState(file.path).set(id, check.checked);
+					void this.refreshFrontmatterSuggestions();
+				});
+
 				row.createSpan({ cls: "honcho-frontmatter-key", text: prop.key });
 				const valueWrap = row.createDiv({ cls: "honcho-frontmatter-value-wrap" });
 				valueWrap.createSpan({
-					cls: "honcho-frontmatter-value",
+					cls: `honcho-frontmatter-value honcho-frontmatter-confidence-${prop.confidence}`,
 					text: this.stringifySuggestionValue(prop.value),
+					attr: { title: `Confidence: ${prop.confidence}` },
 				});
-				valueWrap.createSpan({
-					cls: `honcho-confidence honcho-confidence-${prop.confidence}`,
-					text: prop.confidence,
-				});
-				const exists = existing.properties.has(prop.key);
-				const applyOne = row.createEl("button", {
-					text: exists ? "Added" : "Apply",
-					cls: "honcho-btn-small",
-				});
-				applyOne.disabled = exists || isApplying;
-				applyOne.addEventListener("click", () => {
-					void this.applySingleProperty(file, prop.key, prop.value);
+				row.createSpan({
+					cls: "honcho-frontmatter-status",
+					text: exists ? "Added" : selected ? "Selected" : "Skipped",
 				});
 			}
 		}
 	}
 
+	private showFrontmatterInfo(): void {
+		new Notice(
+			"Suggestions use active note context + existing Honcho memory. More/high-quality ingested notes generally improve suggestion quality.",
+			7000
+		);
+	}
+
 	private openFrontmatterSettings(): void {
-		this.app.commands.executeCommandById("app:open-settings");
-		new Notice("Open Honcho settings > Frontmatter");
+		this.app.setting.open();
+		this.app.setting.openTabById(this.plugin.manifest.id);
+
+		// Apply a focused search so the Frontmatter section is immediately visible.
+		window.setTimeout(() => {
+			const searchInput = this.app.setting.tabContentEl.querySelector<HTMLInputElement>(
+				".honcho-settings-search-input"
+			);
+			if (!searchInput) return;
+			searchInput.value = "frontmatter";
+			searchInput.dispatchEvent(new Event("input"));
+			searchInput.focus();
+		}, 25);
+	}
+
+	private getFrontmatterSelectionState(path: string): Map<string, boolean> {
+		if (!this.frontmatterSelectionState.has(path)) {
+			this.frontmatterSelectionState.set(path, new Map());
+		}
+		return this.frontmatterSelectionState.get(path)!;
+	}
+
+	private syncFrontmatterSelectionState(path: string, selectableIds: Set<string>): Map<string, boolean> {
+		const state = this.getFrontmatterSelectionState(path);
+		for (const id of selectableIds) {
+			if (!state.has(id)) state.set(id, true);
+		}
+		for (const id of Array.from(state.keys())) {
+			if (!selectableIds.has(id)) state.delete(id);
+		}
+		return state;
+	}
+
+	private async applySelectedFrontmatterSuggestion(
+		file: TFile,
+		suggestion: FrontmatterSuggestion,
+		selection: Map<string, boolean>
+	): Promise<void> {
+		if (this.frontmatterApplyingPath) return;
+		this.frontmatterApplyingPath = file.path;
+		await this.refreshFrontmatterSuggestions();
+
+		let tagsAdded = 0;
+		let aliasesAdded = 0;
+		let propertiesAdded = 0;
+
+		try {
+			await this.app.fileManager.processFrontMatter(file, (fm) => {
+				const currentTags = normalizeFrontmatterTags(fm.tags).map((t) => this.normalizeTag(t));
+				const mergedTags = new Set(currentTags);
+				for (const tag of suggestion.tags) {
+					const id = `tag:${tag.value}`;
+					if (selection.get(id) !== true) continue;
+					if (mergedTags.has(tag.value)) continue;
+					mergedTags.add(tag.value);
+					tagsAdded++;
+					this.markFrontmatterApplied(file.path, "tag", tag.value);
+				}
+				if (mergedTags.size > 0) fm.tags = Array.from(mergedTags);
+
+				const rawAliases = fm.aliases;
+				const currentAliases = Array.isArray(rawAliases)
+					? rawAliases.map(String)
+					: typeof rawAliases === "string"
+						? [rawAliases]
+						: [];
+				const mergedAliases = new Set(currentAliases);
+				for (const alias of suggestion.aliases) {
+					const id = `alias:${alias.value}`;
+					if (selection.get(id) !== true) continue;
+					if (mergedAliases.has(alias.value)) continue;
+					mergedAliases.add(alias.value);
+					aliasesAdded++;
+					this.markFrontmatterApplied(file.path, "alias", alias.value);
+				}
+				if (mergedAliases.size > 0) fm.aliases = Array.from(mergedAliases);
+
+				for (const prop of suggestion.properties) {
+					const id = `prop:${prop.key}`;
+					if (selection.get(id) !== true) continue;
+					if (this.isReservedFrontmatterKey(prop.key)) continue;
+					const existing = fm[prop.key];
+					const empty = existing === undefined || existing === null || existing === "";
+					if (!empty) continue;
+					fm[prop.key] = prop.value;
+					propertiesAdded++;
+					this.markFrontmatterApplied(file.path, "property", prop.key);
+				}
+			});
+
+			new Notice(
+				`Applied selected suggestions: ${tagsAdded} tags, ${aliasesAdded} aliases, ${propertiesAdded} properties`
+			);
+		} finally {
+			this.frontmatterApplyingPath = null;
+			await this.refreshFrontmatterSuggestions();
+		}
 	}
 
 	private async generateFrontmatterSuggestion(file: TFile): Promise<void> {
@@ -957,143 +1143,6 @@ export class HonchoSidebarView extends ItemView {
 			return arr.length > 0 ? arr : undefined;
 		}
 		return undefined;
-	}
-
-	private async applyFrontmatterSuggestion(file: TFile, suggestion: FrontmatterSuggestion): Promise<void> {
-		if (this.frontmatterApplyingPath) return;
-		this.frontmatterApplyingPath = file.path;
-		await this.refreshFrontmatterSuggestions();
-
-		let tagsAdded = 0;
-		let aliasesAdded = 0;
-		let propertiesAdded = 0;
-
-		try {
-			await this.app.fileManager.processFrontMatter(file, (fm) => {
-				if (suggestion.tags.length > 0) {
-					const currentTags = normalizeFrontmatterTags(fm.tags)
-						.map((t) => this.normalizeTag(t));
-					const merged = new Set(currentTags);
-					for (const tag of suggestion.tags) {
-						if (!merged.has(tag.value)) {
-							merged.add(tag.value);
-							tagsAdded++;
-							this.markFrontmatterApplied(file.path, "tag", tag.value);
-						}
-					}
-					if (merged.size > 0) fm.tags = Array.from(merged);
-				}
-
-				if (suggestion.aliases.length > 0) {
-					const rawAliases = fm.aliases;
-					const currentAliases = Array.isArray(rawAliases)
-						? rawAliases.map(String)
-						: typeof rawAliases === "string"
-							? [rawAliases]
-							: [];
-					const mergedAliases = new Set(currentAliases);
-					for (const alias of suggestion.aliases) {
-						if (!mergedAliases.has(alias.value)) {
-							mergedAliases.add(alias.value);
-							aliasesAdded++;
-							this.markFrontmatterApplied(file.path, "alias", alias.value);
-						}
-					}
-					if (mergedAliases.size > 0) fm.aliases = Array.from(mergedAliases);
-				}
-
-				for (const prop of suggestion.properties) {
-					if (this.isReservedFrontmatterKey(prop.key)) continue;
-					const existing = fm[prop.key];
-					const empty = existing === undefined || existing === null || existing === "";
-					if (empty) {
-						fm[prop.key] = prop.value;
-						propertiesAdded++;
-						this.markFrontmatterApplied(file.path, "property", prop.key);
-					}
-				}
-			});
-
-			new Notice(
-				`Applied suggestions to ${file.basename}: ${tagsAdded} tags, ${aliasesAdded} aliases, ${propertiesAdded} properties`
-			);
-		} finally {
-			this.frontmatterApplyingPath = null;
-			await this.refreshFrontmatterSuggestions();
-		}
-	}
-
-	private async applySingleTag(file: TFile, tag: string): Promise<void> {
-		if (this.frontmatterApplyingPath) return;
-		this.frontmatterApplyingPath = file.path;
-		await this.refreshFrontmatterSuggestions();
-		try {
-			let added = false;
-			await this.app.fileManager.processFrontMatter(file, (fm) => {
-				const currentTags = normalizeFrontmatterTags(fm.tags).map((t) => this.normalizeTag(t));
-				const merged = new Set(currentTags);
-				if (!merged.has(tag)) {
-					merged.add(tag);
-					fm.tags = Array.from(merged);
-					added = true;
-					this.markFrontmatterApplied(file.path, "tag", tag);
-				}
-			});
-			new Notice(added ? `Added tag #${tag}` : `Tag #${tag} already exists`);
-		} finally {
-			this.frontmatterApplyingPath = null;
-			await this.refreshFrontmatterSuggestions();
-		}
-	}
-
-	private async applySingleAlias(file: TFile, alias: string): Promise<void> {
-		if (this.frontmatterApplyingPath) return;
-		this.frontmatterApplyingPath = file.path;
-		await this.refreshFrontmatterSuggestions();
-		try {
-			let added = false;
-			await this.app.fileManager.processFrontMatter(file, (fm) => {
-				const rawAliases = fm.aliases;
-				const currentAliases = Array.isArray(rawAliases)
-					? rawAliases.map(String)
-					: typeof rawAliases === "string"
-						? [rawAliases]
-						: [];
-				const merged = new Set(currentAliases);
-				if (!merged.has(alias)) {
-					merged.add(alias);
-					fm.aliases = Array.from(merged);
-					added = true;
-					this.markFrontmatterApplied(file.path, "alias", alias);
-				}
-			});
-			new Notice(added ? `Added alias "${alias}"` : `Alias "${alias}" already exists`);
-		} finally {
-			this.frontmatterApplyingPath = null;
-			await this.refreshFrontmatterSuggestions();
-		}
-	}
-
-	private async applySingleProperty(file: TFile, key: string, value: unknown): Promise<void> {
-		if (this.frontmatterApplyingPath) return;
-		this.frontmatterApplyingPath = file.path;
-		await this.refreshFrontmatterSuggestions();
-		try {
-			let added = false;
-			await this.app.fileManager.processFrontMatter(file, (fm) => {
-				const existing = fm[key];
-				const empty = existing === undefined || existing === null || existing === "";
-				if (empty) {
-					fm[key] = value;
-					added = true;
-					this.markFrontmatterApplied(file.path, "property", key);
-				}
-			});
-			new Notice(added ? `Added frontmatter property "${key}"` : `Property "${key}" already set`);
-		} finally {
-			this.frontmatterApplyingPath = null;
-			await this.refreshFrontmatterSuggestions();
-		}
 	}
 
 	private getExistingFrontmatterState(file: TFile): {
