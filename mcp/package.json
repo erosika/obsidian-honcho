@@ -9,6 +9,7 @@
     "start": "bun run server.ts"
   },
   "dependencies": {
+    "@honcho-ai/sdk": "^2.0.1",
     "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "devDependencies": {

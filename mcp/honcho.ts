@@ -1,15 +1,16 @@
 /**
- * Honcho API service for the Obsidian-Honcho MCP server.
+ * Honcho service for the Obsidian-Honcho MCP server.
  *
- * Single-peer model: one peer who sends messages and gets
- * observed. Aligns with the plugin's collapsed peer architecture.
+ * Thin wrapper around @honcho-ai/sdk. Single-peer model: one peer who sends
+ * messages and gets observed. Aligns with the plugin's collapsed peer architecture.
  *
  * Lazy initialization: workspace + peer created on first Honcho tool use.
- * Uses native fetch (not Obsidian's requestUrl).
  */
 
+import { Honcho, type Peer } from "@honcho-ai/sdk";
+
 // ---------------------------------------------------------------------------
-// Response types
+// Response types (kept for bridge.ts compatibility)
 // ---------------------------------------------------------------------------
 
 export interface PageResponse<T> {
@@ -27,17 +28,6 @@ export interface SessionResponse {
 	metadata: Record<string, unknown>;
 	configuration: Record<string, unknown>;
 	created_at: string;
-}
-
-export interface MessageResponse {
-	id: string;
-	content: string;
-	peer_id: string;
-	session_id: string;
-	workspace_id: string;
-	metadata: Record<string, unknown>;
-	created_at: string;
-	token_count: number;
 }
 
 export interface ConclusionResponse {
@@ -63,112 +53,49 @@ export interface QueueStatusResponse {
 export interface ChatResponse {
 	content: string;
 	session_id: string;
-	metadata?: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+export interface HonchoServiceConfig {
+	apiKey: string;
+	baseUrl: string;
+	workspace: string;
+	peer: string;
 }
 
 // ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
 
-export interface HonchoServiceConfig {
-	apiKey: string;
-	baseUrl: string;
-	apiVersion: string;
-	workspace: string;
-	peer: string;
-}
-
 export class HonchoService {
-	private apiKey: string;
-	private baseUrl: string;
-	private apiVersion: string;
+	private sdk: Honcho;
+	private _peer: Peer | null = null;
 	readonly workspace: string;
 	readonly peer: string;
 	private initialized = false;
 
 	constructor(config: HonchoServiceConfig) {
-		this.apiKey = config.apiKey;
-		this.baseUrl = config.baseUrl.replace(/\/+$/, "");
-		this.apiVersion = config.apiVersion;
 		this.workspace = config.workspace;
 		this.peer = config.peer;
-	}
-
-	// -----------------------------------------------------------------------
-	// HTTP layer
-	// -----------------------------------------------------------------------
-
-	private url(path: string): string {
-		return `${this.baseUrl}/${this.apiVersion}${path}`;
-	}
-
-	private async request<T>(
-		method: string,
-		path: string,
-		body?: unknown,
-		query?: Record<string, string | number | undefined>
-	): Promise<T> {
-		let fullUrl = this.url(path);
-
-		if (query) {
-			const params = new URLSearchParams();
-			for (const [k, v] of Object.entries(query)) {
-				if (v !== undefined) params.set(k, String(v));
-			}
-			const qs = params.toString();
-			if (qs) fullUrl += `?${qs}`;
-		}
-
-		const resp = await fetch(fullUrl, {
-			method,
-			headers: {
-				Authorization: `Bearer ${this.apiKey}`,
-				"Content-Type": "application/json",
-			},
-			body: body ? JSON.stringify(body) : undefined,
+		this.sdk = new Honcho({
+			workspaceId: config.workspace,
+			apiKey: config.apiKey,
+			baseURL: config.baseUrl,
 		});
-
-		if (!resp.ok) {
-			throw new Error(`Honcho API ${resp.status}: ${await resp.text()}`);
-		}
-
-		if (resp.status === 204 || resp.headers.get("content-length") === "0") {
-			return undefined as T;
-		}
-
-		return (await resp.json()) as T;
 	}
 
-	private post<T>(path: string, body?: unknown, query?: Record<string, string | number | undefined>): Promise<T> {
-		return this.request<T>("POST", path, body, query);
-	}
-
-	private put<T>(path: string, body?: unknown): Promise<T> {
-		return this.request<T>("PUT", path, body);
-	}
-
-	private get<T>(path: string, query?: Record<string, string | number | undefined>): Promise<T> {
-		return this.request<T>("GET", path, undefined, query);
-	}
-
-	// -----------------------------------------------------------------------
-	// Lazy initialization
-	// -----------------------------------------------------------------------
-
-	/**
-	 * Ensure workspace and peer exist. Called once on first Honcho tool use.
-	 * Single peer model: one peer with observe_me: true.
-	 */
 	async ensureInitialized(): Promise<void> {
 		if (this.initialized) return;
-
-		await this.post("/workspaces", { id: this.workspace });
-		await this.post(`/workspaces/${this.workspace}/peers`, {
-			id: this.peer,
-			configuration: { observe_me: true },
-		});
-
+		this._peer = await this.sdk.peer(this.peer);
 		this.initialized = true;
+	}
+
+	private get hPeer(): Peer {
+		if (!this._peer) throw new Error("Honcho not initialized — call ensureInitialized() first");
+		return this._peer;
 	}
 
 	// -----------------------------------------------------------------------
@@ -176,15 +103,20 @@ export class HonchoService {
 	// -----------------------------------------------------------------------
 
 	async listSessions(
-		filters?: Record<string, unknown>,
-		page = 1,
-		size = 50
+		_filters?: Record<string, unknown>,
+		_page = 1,
+		_size = 50
 	): Promise<PageResponse<SessionResponse>> {
-		return this.post<PageResponse<SessionResponse>>(
-			`/workspaces/${this.workspace}/sessions/list`,
-			{ filters },
-			{ page, size }
-		);
+		const page = await this.hPeer.sessions();
+		const items: SessionResponse[] = page.items.map((s) => ({
+			id: s.id,
+			workspace_id: s.workspaceId,
+			is_active: true,
+			metadata: s.metadata ?? {},
+			configuration: s.configuration ?? {},
+			created_at: "",
+		}));
+		return { items, page: 1, size: items.length, total: page.total, pages: page.pages };
 	}
 
 	// -----------------------------------------------------------------------
@@ -193,12 +125,17 @@ export class HonchoService {
 
 	async queryConclusions(
 		query: string,
-		opts?: { top_k?: number; filters?: Record<string, unknown> }
+		opts?: { top_k?: number }
 	): Promise<ConclusionResponse[]> {
-		return this.post<ConclusionResponse[]>(
-			`/workspaces/${this.workspace}/conclusions/query`,
-			{ query, ...opts }
-		);
+		const results = await this.hPeer.conclusions.query(query, opts?.top_k);
+		return results.map((c) => ({
+			id: c.id,
+			content: c.content,
+			observer_id: c.observerId,
+			observed_id: c.observedId,
+			session_id: c.sessionId,
+			created_at: c.createdAt,
+		}));
 	}
 
 	async listConclusions(
@@ -206,11 +143,17 @@ export class HonchoService {
 		page = 1,
 		size = 50
 	): Promise<PageResponse<ConclusionResponse>> {
-		return this.post<PageResponse<ConclusionResponse>>(
-			`/workspaces/${this.workspace}/conclusions/list`,
-			{ filters },
-			{ page, size }
-		);
+		const sessionId = filters?.session_id as string | undefined;
+		const result = await this.hPeer.conclusions.list({ session: sessionId, page, size });
+		const items: ConclusionResponse[] = result.items.map((c) => ({
+			id: c.id,
+			content: c.content,
+			observer_id: c.observerId,
+			observed_id: c.observedId,
+			session_id: c.sessionId,
+			created_at: c.createdAt,
+		}));
+		return { items, page: result.page, size: result.size, total: result.total, pages: result.pages };
 	}
 
 	// -----------------------------------------------------------------------
@@ -220,31 +163,20 @@ export class HonchoService {
 	async getPeerRepresentation(
 		opts?: { search_query?: string; search_top_k?: number }
 	): Promise<RepresentationResponse> {
-		return this.post<RepresentationResponse>(
-			`/workspaces/${this.workspace}/peers/${this.peer}/representation`,
-			opts ?? {}
-		);
+		const representation = await this.hPeer.representation({
+			searchQuery: opts?.search_query,
+			searchTopK: opts?.search_top_k,
+		});
+		return { representation };
 	}
 
 	// -----------------------------------------------------------------------
-	// Chat (peerChat)
+	// Chat
 	// -----------------------------------------------------------------------
 
-	/**
-	 * Send a message to peerChat on the obsidian workspace.
-	 * Uses an existing session (from ingestion) so Honcho has full note context.
-	 */
-	async peerChat(
-		sessionId: string,
-		message: string
-	): Promise<ChatResponse> {
-		return this.post<ChatResponse>(
-			`/workspaces/${this.workspace}/peers/${this.peer}/chat`,
-			{
-				session_id: sessionId,
-				messages: [{ role: "user", content: message }],
-			}
-		);
+	async peerChat(sessionId: string, message: string): Promise<ChatResponse> {
+		const content = await this.hPeer.chat(message, { session: sessionId });
+		return { content: content ?? "", session_id: sessionId };
 	}
 
 	// -----------------------------------------------------------------------
@@ -252,10 +184,13 @@ export class HonchoService {
 	// -----------------------------------------------------------------------
 
 	async getQueueStatus(): Promise<QueueStatusResponse> {
-		return this.get<QueueStatusResponse>(
-			`/workspaces/${this.workspace}/queue/status`,
-			{ peer_id: this.peer }
-		);
+		const status = await this.sdk.queueStatus({ observer: this.peer });
+		return {
+			total_work_units: status.totalWorkUnits,
+			completed_work_units: status.completedWorkUnits,
+			in_progress_work_units: status.inProgressWorkUnits,
+			pending_work_units: status.pendingWorkUnits,
+		};
 	}
 
 	// -----------------------------------------------------------------------
@@ -263,14 +198,10 @@ export class HonchoService {
 	// -----------------------------------------------------------------------
 
 	async scheduleDream(opts?: { session_id?: string }): Promise<void> {
-		await this.post(
-			`/workspaces/${this.workspace}/schedule_dream`,
-			{
-				observer: this.peer,
-				observed: this.peer,
-				dream_type: "omni",
-				session_id: opts?.session_id,
-			}
-		);
+		await this.sdk.scheduleDream({
+			observer: this.peer,
+			observed: this.peer,
+			session: opts?.session_id,
+		});
 	}
 }

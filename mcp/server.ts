@@ -171,7 +171,6 @@ async function main() {
 	honcho = new HonchoService({
 		apiKey: config.honcho.apiKey,
 		baseUrl: config.honcho.baseUrl,
-		apiVersion: config.honcho.apiVersion,
 		workspace: config.honcho.workspace,
 		peer: config.honcho.peer,
 	});

@@ -43,7 +43,6 @@ export interface ServerConfig {
 	honcho: {
 		apiKey: string;
 		baseUrl: string;
-		apiVersion: string;
 		workspace: string;
 		peer: string;
 	};
@@ -67,7 +66,6 @@ export function loadConfig(): ServerConfig {
 		honcho: {
 			apiKey,
 			baseUrl: (process.env.HONCHO_BASE_URL ?? "https://api.honcho.dev").replace(/\/+$/, ""),
-			apiVersion: "v3",
 			workspace: process.env.HONCHO_WORKSPACE ?? "",
 			peer,
 		},
