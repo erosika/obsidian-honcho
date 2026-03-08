@@ -188,7 +188,7 @@
 .honcho-section h4,
 .honcho-section-header h4 {
 	margin: 0;
-	color: var(--text-faint);
+	color: var(--text-muted);
 	font-size: var(--font-ui-smaller);
 	font-family: var(--font-monospace);
 	text-transform: uppercase;
@@ -207,7 +207,7 @@
 	border-radius: 0 !important;
 	min-height: auto !important;
 	height: auto !important;
-	color: var(--text-faint);
+	color: var(--text-muted);
 	font-size: var(--font-ui-smaller);
 	font-family: var(--font-monospace);
 	text-transform: uppercase;
@@ -305,7 +305,7 @@ details[open] > .honcho-group-summary::before {
 .honcho-group-count {
 	font-size: var(--font-ui-smaller);
 	font-family: var(--font-monospace);
-	color: var(--text-faint);
+	color: var(--text-muted);
 	background: var(--background-primary);
 	padding: 1px 5px;
 	border: 1px solid var(--background-modifier-border);
@@ -360,7 +360,7 @@ details[open] > .honcho-group-summary::before {
 	font-size: var(--font-ui-smaller);
 	text-transform: uppercase;
 	letter-spacing: 0.06em;
-	color: var(--text-faint);
+	color: var(--text-muted);
 }
 
 .honcho-card-kv-value {
